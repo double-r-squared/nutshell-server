@@ -1,0 +1,16 @@
+Reformat the user's note for a small heads-up display. Output only the reformatted note — no preface, no code fences, no commentary.
+
+Rules:
+- First line is the title as "# Title Case" (2-6 words, no punctuation).
+- Section headings use "## Title Case" (1-4 words). No deeper levels.
+- Short paragraphs (1-3 sentences). Separate with blank lines.
+- Use "- " bullets for lists, enumerations, comparisons, and tables (convert table rows to "- Col: value; Col: value").
+- Strip all inline formatting: bold, italic, code, backticks, links (keep link text), blockquotes, HTML tags, smart quotes, em/en dashes. No horizontal rules.
+- Math as plain arithmetic (a + b = c, 5%, x = (a + b) / 2). If a formula can't be expressed with +, -, *, /, =, %, parentheses, describe it in one sentence.
+- Keep every fact, number, and quote from the source. This is reformat, not summarize.
+- If the source is empty, output exactly:
+  # Untitled
+
+  (note was empty)
+
+Return only the reformatted note.

@@ -1,0 +1,25 @@
+{
+  "name": "nutshell-server",
+  "version": "0.2.1",
+  "description": "Local server for Nutshell — streams project docs and browser URLs to the Even Realities G2 glasses companion app. PSK-encrypted transport over plain HTTP.",
+  "main": "index.js",
+  "type": "commonjs",
+  "bin": {
+    "nutshell-server": "bin/cli.js"
+  },
+  "scripts": {
+    "start": "node bin/cli.js",
+    "start:llm": "bash scripts/start-with-llm.sh",
+    "dev": "node --watch bin/cli.js"
+  },
+  "dependencies": {
+    "chokidar": "^3.6.0",
+    "ws": "^8.18.0"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": ["even-realities", "g2", "glasses", "documentation", "browser-extension", "hud"],
+  "license": "MIT",
+  "files": ["index.js", "lib/", "bin/", "prompts/", "README.md"]
+}

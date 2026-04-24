@@ -1,0 +1,11 @@
+node_modules/
+.nutshell-api-key
+.docs-api-key
+.url-api-key
+.ollama.log
+*.log
+.DS_Store
+
+./.nutshell-api-key
+
+./.ollama.log
