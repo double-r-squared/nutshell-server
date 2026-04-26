@@ -30,11 +30,22 @@ encrypted flow.
     "multiProject": true,
     "url": true,
     "llm": true,
-    "llmModel": "llama3.2:3b"
+    "llmModel": "llama3.2:3b",
+    "push": true
   },
-  "projectCount": 3
+  "projectCount": 3,
+  "projectIds": ["proj-uuid-1", "proj-uuid-2", "proj-uuid-3"]
 }
 ```
+
+`projectIds` is the list of project UUIDs the server currently knows
+about. Random UUIDs; safe to expose unauthenticated. Clients use this to
+detect when their project has been evicted (server restart, manual
+unregister) and re-register without re-pushing on every heartbeat.
+
+`features.push` advertises that the server understands push-mode
+registrations (`POST /projects/register` with `files[]`) and the
+`/projects/files/upsert` and `/projects/files/delete` endpoints.
 
 ## `POST /ping`
 
@@ -58,17 +69,32 @@ List all projects currently registered on the server.
 
 ```json
 [
-  { "id": "proj-uuid-1", "name": "Alpha",  "docsPath": "/Users/you/alpha/docs" },
-  { "id": "proj-uuid-2", "name": "Beta",   "docsPath": "/Users/you/beta/docs" }
+  { "id": "proj-uuid-1", "name": "Alpha", "mode": "fs",   "docsPath": "/Users/you/alpha/docs" },
+  { "id": "proj-uuid-2", "name": "Beta",  "mode": "push", "fileCount": 42 }
 ]
 ```
+
+`mode` distinguishes how the server obtained the project's files:
+
+- `fs`   — server filesystem-watches `docsPath` via chokidar. Used when the
+  Nutshell client (typically the VS Code extension) and the server live on
+  the same machine.
+- `push` — extension scans the local filesystem and streams files to the
+  server, which caches them in memory. Used when the server is on a
+  different machine and cannot read the user's local disk.
+
+The phone never has to care which mode a project uses — `/files` and
+`/file` return identical shapes either way.
 
 ## `POST /projects/register`
 
 Add or update a project. Idempotent — sending the same `id` with new fields
-upserts the existing entry (old watcher is closed, new one opens).
+upserts the existing entry (old watcher / cached file set is replaced).
 
-**Request (decrypted)**:
+The endpoint accepts two payload shapes; the server picks the project's
+mode at register time based on which fields are present.
+
+**Request — fs mode (decrypted)**:
 
 ```json
 {
@@ -77,6 +103,30 @@ upserts the existing entry (old watcher is closed, new one opens).
   "docsPath": "/Users/you/alpha/docs"
 }
 ```
+
+**Request — push mode (decrypted)**:
+
+```json
+{
+  "id": "proj-uuid-1",
+  "name": "Alpha",
+  "files": [
+    {
+      "id": "overview.md",
+      "name": "overview",
+      "folder": "",
+      "modifiedAt": 1714000000000,
+      "size": 4096,
+      "content": "# Overview\n\nFull markdown body of the file..."
+    }
+  ]
+}
+```
+
+The push payload carries the entire file set with content baked in.
+Acts as a snapshot: re-registering replaces the project's cached file
+set atomically. Server computes `title` from each file's content (first
+H1 in the first 2 KB) so the response shape of `/files` matches fs mode.
 
 `id` should be stable across the lifetime of the project. The VS Code
 extension generates a UUID v4 and stores it in `.vscode/nutshell-project-id`
@@ -87,15 +137,75 @@ inside the workspace.
 ```json
 {
   "ok": true,
-  "project": { "id": "proj-uuid-1", "name": "Alpha", "docsPath": "..." }
+  "project": { "id": "proj-uuid-1", "name": "Alpha", "mode": "push", "fileCount": 1 }
 }
 ```
 
-**Response 400 (decrypted)**: `{"error": "docsPath does not exist: ..."}`
-— or missing fields.
+**Response 400 (decrypted)**:
+- `{"error": "Missing id or name"}`
+- `{"error": "Payload must include either docsPath (fs mode) or files[] (push mode)"}`
+- `{"error": "docsPath does not exist: ..."}` (fs mode)
+- `{"error": "Invalid file entry in push payload"}` (push mode)
+
+Push-mode register accepts envelopes up to 50 MB; fs-mode register stays
+on the default 64 KB envelope budget.
 
 Side effect: server broadcasts `{type: "project-registered", id, name}` over
-WebSocket.
+WebSocket. In push mode, no `file-added` events fire for the initial
+snapshot — the phone learns the file set by calling `/files` on connect.
+
+## `POST /projects/files/upsert` (push mode only)
+
+Push a single file's content into a push-mode project. Idempotent.
+
+**Request (decrypted)**:
+
+```json
+{
+  "projectId": "proj-uuid-1",
+  "file": {
+    "id": "overview.md",
+    "name": "overview",
+    "folder": "",
+    "modifiedAt": 1714000000000,
+    "size": 4096,
+    "content": "# Overview\n\n..."
+  }
+}
+```
+
+**Response 200 (decrypted)**: `{ "ok": true, "created": true }` — `created`
+is `true` on first sight of this `id`, `false` on overwrite.
+
+**Response 400 (decrypted)**:
+- `{"error": "Project is not in push mode"}` — the project was registered
+  in fs mode; use file system writes to update its docs instead.
+- `{"error": "Invalid file payload"}`
+
+**Response 404 (decrypted)**: `{"error": "Project not found"}`
+
+Side effect: WS broadcast `{type: "file-added", projectId, id, name, folder}`
+on first sight, or `{type: "file-updated", projectId, id, name, folder}` on
+overwrite. The phone uses these to invalidate any cached read of the file.
+
+Envelopes up to 10 MB are accepted (covers any practical single .md file).
+
+## `POST /projects/files/delete` (push mode only)
+
+Remove a file from a push-mode project's cached set.
+
+**Request (decrypted)**: `{ "projectId": "proj-uuid-1", "id": "overview.md" }`
+
+**Response 200 (decrypted)**: `{ "ok": true, "removed": true }` — `removed`
+is `false` if the id wasn't in the cache.
+
+**Response 400 (decrypted)**: `{"error": "Project is not in push mode"}`
+or `{"error": "Missing id"}`.
+
+**Response 404 (decrypted)**: `{"error": "Project not found"}`
+
+Side effect: WS broadcast `{type: "file-removed", projectId, id}` if the
+file was actually present.
 
 ## `POST /projects/unregister`
 
@@ -379,6 +489,36 @@ re-probe `/health` after a short delay.
 ---
 
 ## Changelog
+
+### 0.6.0 — push-mode projects (remote-server support)
+
+Servers can now hold project files in memory rather than reading from
+disk, so a single Nutshell server on a remote machine (e.g. one reached
+over Tailscale) can serve docs that live on the user's local laptop.
+
+- `POST /projects/register` accepts a second payload shape:
+  `{id, name, files: [{id, name, folder, modifiedAt, size, content}]}`.
+  The presence of `files[]` puts the project in push mode (no chokidar,
+  no disk reads). The legacy `{id, name, docsPath}` shape is unchanged
+  and stays in fs mode.
+- `POST /projects/files/upsert` — push a single file's full content into
+  a push-mode project. Broadcasts `file-added` (first sight) or
+  `file-updated` (overwrite).
+- `POST /projects/files/delete` — remove a file. Broadcasts `file-removed`.
+- `POST /files` and `POST /file` return identical shapes whether the
+  project is fs- or push-mode; the phone needs no changes.
+- `GET /health` now includes `projectIds: [...]` (random UUIDs, safe
+  unauthenticated) and `features.push: true`. Clients use the id list to
+  decide whether to re-register on heartbeat or no-op.
+- Server `projectsList` and `projectSummary` include a `mode` field on
+  each project entry (`fs` or `push`).
+- Server-side payload limits raised: `/projects/register` accepts up to
+  50 MB envelopes (covers the practical upper bound of a single
+  project's full file set with envelope overhead). `/projects/files/upsert`
+  accepts up to 10 MB. Other endpoints stay at 64 KB.
+
+The phone (`even/`) is unchanged. Pairing client: `nutshell-vscode` 0.4.0+,
+which switches to push mode automatically when `serverMode: "remote"`.
 
 ### 0.5.1 — request and connection logging
 

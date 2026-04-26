@@ -7,7 +7,7 @@ const { WebSocketServer } = require('ws')
 
 const { ensureKey } = require('./lib/auth')
 const { encrypt, decrypt } = require('./lib/crypto')
-const { scanFiles, readFile } = require('./lib/files')
+const { scanFiles, readFile, folderId, extractTitleFromText } = require('./lib/files')
 const { createWatcher } = require('./lib/watcher')
 const notesStore = require('./lib/notes')
 const {
@@ -117,8 +117,11 @@ function createServer(options = {}) {
     })
   }
 
-  async function decryptBody(req) {
-    const envelope = await readJsonBody(req)
+  // Most endpoints stay at the default 64 KB envelope budget. Push-file
+  // endpoints take a larger limit so a single .md file plus base64 overhead
+  // fits comfortably (10 MB raw covers the practical range).
+  async function decryptBody(req, limitBytes) {
+    const envelope = await readJsonBody(req, limitBytes)
     return JSON.parse(decrypt(envelope, API_KEY))
   }
 
@@ -176,35 +179,92 @@ function createServer(options = {}) {
 
   // ── Projects ──────────────────────────────────────────────────────────────
 
+  // Project state has two flavors:
+  //
+  //   fs   — server filesystem-watches a path (chokidar). Used when the
+  //          extension is on the same machine as the server, so the server
+  //          can read docs directly from disk.
+  //
+  //   push — extension is the source of truth (typically because the
+  //          server is on a different machine). Extension pushes file
+  //          contents via /projects/files/upsert; server caches in memory.
+  //          No watcher; no disk reads.
+  //
+  // Mode is decided at register time by which fields the payload carries:
+  // `docsPath` -> fs, `files` -> push. Both flavors expose the same
+  // /files and /file shape to the phone.
   function projectSummary(proj) {
-    return { id: proj.id, name: proj.name, docsPath: proj.docsPath }
+    if (proj.mode === 'push') {
+      return { id: proj.id, name: proj.name, mode: 'push', fileCount: proj.files.size }
+    }
+    return { id: proj.id, name: proj.name, mode: 'fs', docsPath: proj.docsPath }
   }
 
   function projectsList() {
     return [...projects.values()].map(projectSummary)
   }
 
-  function registerProject({ id, name: projectName, docsPath }) {
-    const absPath = path.resolve(docsPath)
-    if (!fs.existsSync(absPath)) {
-      throw Object.assign(new Error(`docsPath does not exist: ${absPath}`), { status: 400 })
-    }
+  // Coerce one push-mode file payload into the canonical FileEntry shape
+  // (matching scanFiles output) plus the in-memory `content` field. Returns
+  // null when validation fails so the caller can 400.
+  function normalizePushFile(raw) {
+    if (!raw || typeof raw !== 'object') return null
+    const id = typeof raw.id === 'string' ? raw.id.trim() : ''
+    if (!id || id.includes('..')) return null
+    const content = typeof raw.content === 'string' ? raw.content : ''
+    const name = typeof raw.name === 'string' && raw.name
+      ? raw.name
+      : id.split('/').pop().replace(/\.md$/, '')
+    const folder = typeof raw.folder === 'string' ? raw.folder : folderId(id)
+    const modifiedAt = Number.isFinite(raw.modifiedAt) ? raw.modifiedAt : Date.now()
+    const size = Number.isFinite(raw.size) ? raw.size : Buffer.byteLength(content, 'utf8')
+    const title = extractTitleFromText(content) || name
+    const meta = { id, name, title, folder, path: id, modifiedAt, size }
+    return { meta, content }
+  }
 
-    // Tear down the old watcher if re-registering an existing project.
+  function tearDownProject(proj) {
+    if (proj.watcher) {
+      try { proj.watcher.close() } catch {}
+    }
+  }
+
+  function registerProject({ id, name: projectName, docsPath, files }) {
+    const isPush = Array.isArray(files)
+
     const prev = projects.get(id)
     const isNew = !prev
-    if (prev && prev.watcher) {
-      try { prev.watcher.close() } catch {}
+    if (prev) tearDownProject(prev)
+
+    let project
+    if (isPush) {
+      const fileMap = new Map()
+      for (const raw of files) {
+        const normalized = normalizePushFile(raw)
+        if (!normalized) {
+          throw Object.assign(new Error('Invalid file entry in push payload'), { status: 400 })
+        }
+        fileMap.set(normalized.meta.id, normalized)
+      }
+      project = { id, name: projectName, mode: 'push', files: fileMap }
+    } else {
+      const absPath = path.resolve(docsPath)
+      if (!fs.existsSync(absPath)) {
+        throw Object.assign(new Error(`docsPath does not exist: ${absPath}`), { status: 400 })
+      }
+      const watcher = createWatcher(absPath, (event) => {
+        broadcast({ ...event, projectId: id })
+      })
+      project = { id, name: projectName, mode: 'fs', docsPath: absPath, watcher }
     }
 
-    const watcher = createWatcher(absPath, (event) => {
-      broadcast({ ...event, projectId: id })
-    })
-    const project = { id, name: projectName, docsPath: absPath, watcher }
     projects.set(id, project)
     broadcast({ type: 'project-registered', id, name: projectName })
+    const where = isPush
+      ? `push (${project.files.size} file${project.files.size !== 1 ? 's' : ''})`
+      : project.docsPath
     console.log(
-      `[projects] ${isNew ? 'registered' : 're-registered'} ${id} "${projectName}" -> ${absPath} (total: ${projects.size})`,
+      `[projects] ${isNew ? 'registered' : 're-registered'} ${id} "${projectName}" -> ${where} (total: ${projects.size})`,
     )
     return project
   }
@@ -215,9 +275,7 @@ function createServer(options = {}) {
       console.log(`[projects] unregister no-op (id ${id} not found)`)
       return false
     }
-    if (proj.watcher) {
-      try { proj.watcher.close() } catch {}
-    }
+    tearDownProject(proj)
     projects.delete(id)
     broadcast({ type: 'project-unregistered', id })
     console.log(`[projects] unregistered ${id} "${proj.name}" (total: ${projects.size})`)
@@ -260,8 +318,13 @@ function createServer(options = {}) {
           url: true,
           llm: llmReady,
           llmModel: llmReady ? ollama.model : undefined,
+          push: true,
         },
         projectCount: projects.size,
+        // Random UUIDs; safe to expose unauthenticated. The VS Code
+        // extension uses this to decide whether to re-register on
+        // heartbeat (no-op when its id is already in this list).
+        projectIds: [...projects.keys()],
       })
       return
     }
@@ -290,11 +353,16 @@ function createServer(options = {}) {
       return
     }
 
-    // /projects/register — upsert
+    // /projects/register — upsert. Accepts either shape:
+    //   fs   mode: { id, name, docsPath }
+    //   push mode: { id, name, files: [{id, name, folder, modifiedAt, size, content}] }
     if (req.method === 'POST' && pathname === '/projects/register') {
       let payload
       try {
-        payload = await decryptBody(req)
+        // Push-mode register carries the entire initial file set in one
+        // request. 50 MB covers the practical upper bound (the user
+        // estimated <10 MB total per project) with envelope overhead.
+        payload = await decryptBody(req, 50 * 1024 * 1024)
       } catch {
         sendJson(res, 401, { error: 'Unauthorized' })
         return
@@ -302,14 +370,28 @@ function createServer(options = {}) {
       const id = typeof payload.id === 'string' ? payload.id.trim() : ''
       const pname = typeof payload.name === 'string' ? payload.name.trim() : ''
       const pDocsPath = typeof payload.docsPath === 'string' ? payload.docsPath : ''
-      if (!id || !pname || !pDocsPath) {
-        sendEncrypted(res, 400, JSON.stringify({ error: 'Missing id, name, or docsPath' }))
+      const pFiles = Array.isArray(payload.files) ? payload.files : null
+      if (!id || !pname) {
+        console.warn(`[projects] register rejected — missing id or name`)
+        sendEncrypted(res, 400, JSON.stringify({ error: 'Missing id or name' }))
+        return
+      }
+      if (!pDocsPath && !pFiles) {
+        console.warn(`[projects] register rejected — payload missing both docsPath and files`)
+        sendEncrypted(
+          res,
+          400,
+          JSON.stringify({ error: 'Payload must include either docsPath (fs mode) or files[] (push mode)' }),
+        )
         return
       }
       try {
-        const proj = registerProject({ id, name: pname, docsPath: pDocsPath })
+        const proj = pFiles
+          ? registerProject({ id, name: pname, files: pFiles })
+          : registerProject({ id, name: pname, docsPath: pDocsPath })
         sendEncrypted(res, 200, JSON.stringify({ ok: true, project: projectSummary(proj) }))
       } catch (err) {
+        console.warn(`[projects] register failed — ${err.message}`)
         sendEncrypted(res, err.status || 500, JSON.stringify({ error: err.message }))
       }
       return
@@ -334,7 +416,8 @@ function createServer(options = {}) {
       return
     }
 
-    // /files — list files in a project
+    // /files — list files in a project. Same response shape regardless of
+    // the project's mode; phone has no notion of fs vs push.
     if (req.method === 'POST' && pathname === '/files') {
       let payload
       try {
@@ -353,12 +436,14 @@ function createServer(options = {}) {
         sendEncrypted(res, 404, JSON.stringify({ error: 'Project not found' }))
         return
       }
-      const files = await scanFiles(proj.docsPath)
+      const files = proj.mode === 'push'
+        ? [...proj.files.values()].map((entry) => entry.meta)
+        : await scanFiles(proj.docsPath)
       sendEncrypted(res, 200, JSON.stringify(files))
       return
     }
 
-    // /file — read one file in a project
+    // /file — read one file in a project.
     if (req.method === 'POST' && pathname === '/file') {
       let payload
       try {
@@ -378,12 +463,89 @@ function createServer(options = {}) {
         sendEncrypted(res, 404, JSON.stringify({ error: 'Project not found' }))
         return
       }
-      const content = await readFile(proj.docsPath, fileId)
+      let content
+      if (proj.mode === 'push') {
+        const entry = proj.files.get(fileId)
+        content = entry ? entry.content : null
+      } else {
+        content = await readFile(proj.docsPath, fileId)
+      }
       if (content === null) {
         sendEncrypted(res, 404, JSON.stringify({ error: 'Not found' }))
       } else {
         sendEncrypted(res, 200, content)
       }
+      return
+    }
+
+    // /projects/files/upsert — push a single file's content into a
+    // push-mode project. Idempotent. Broadcasts file-added on first sight,
+    // file-updated on subsequent calls.
+    if (req.method === 'POST' && pathname === '/projects/files/upsert') {
+      let payload
+      try {
+        payload = await decryptBody(req, 10 * 1024 * 1024)
+      } catch {
+        sendJson(res, 401, { error: 'Unauthorized' })
+        return
+      }
+      const projectId = typeof payload.projectId === 'string' ? payload.projectId : ''
+      const proj = projects.get(projectId)
+      if (!projectId || !proj) {
+        sendEncrypted(res, 404, JSON.stringify({ error: 'Project not found' }))
+        return
+      }
+      if (proj.mode !== 'push') {
+        sendEncrypted(res, 400, JSON.stringify({ error: 'Project is not in push mode' }))
+        return
+      }
+      const normalized = normalizePushFile(payload.file)
+      if (!normalized) {
+        sendEncrypted(res, 400, JSON.stringify({ error: 'Invalid file payload' }))
+        return
+      }
+      const wasPresent = proj.files.has(normalized.meta.id)
+      proj.files.set(normalized.meta.id, normalized)
+      broadcast({
+        type: wasPresent ? 'file-updated' : 'file-added',
+        projectId,
+        id: normalized.meta.id,
+        name: normalized.meta.name,
+        folder: normalized.meta.folder,
+      })
+      sendEncrypted(res, 200, JSON.stringify({ ok: true, created: !wasPresent }))
+      return
+    }
+
+    // /projects/files/delete — remove a file from a push-mode project.
+    if (req.method === 'POST' && pathname === '/projects/files/delete') {
+      let payload
+      try {
+        payload = await decryptBody(req)
+      } catch {
+        sendJson(res, 401, { error: 'Unauthorized' })
+        return
+      }
+      const projectId = typeof payload.projectId === 'string' ? payload.projectId : ''
+      const fileId = typeof payload.id === 'string' ? payload.id : ''
+      const proj = projects.get(projectId)
+      if (!projectId || !proj) {
+        sendEncrypted(res, 404, JSON.stringify({ error: 'Project not found' }))
+        return
+      }
+      if (proj.mode !== 'push') {
+        sendEncrypted(res, 400, JSON.stringify({ error: 'Project is not in push mode' }))
+        return
+      }
+      if (!fileId) {
+        sendEncrypted(res, 400, JSON.stringify({ error: 'Missing id' }))
+        return
+      }
+      const removed = proj.files.delete(fileId)
+      if (removed) {
+        broadcast({ type: 'file-removed', projectId, id: fileId })
+      }
+      sendEncrypted(res, 200, JSON.stringify({ ok: true, removed }))
       return
     }
 
