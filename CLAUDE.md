@@ -48,9 +48,11 @@ Do not ship a wire change in one repo without the matching client updates.
 
 ## Memory
 
-`memory/` is your private scratch (gitignored). The project's public
-knowledge lives in `AGENTS.md` and `docs/` — never copy memory content into
-project docs.
+The assistant's structured scratch lives in
+[`../loggingagent.md`](../loggingagent.md) at the workspace root —
+follows the workspace, not this individual repo. The project's public
+knowledge lives in `AGENTS.md` and `docs/` — never copy logging-agent
+content into project docs.
 
 ## Style
 

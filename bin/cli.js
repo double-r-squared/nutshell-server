@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 'use strict'
 
-const os = require('os')
 const path = require('path')
 const { createServer } = require('../index')
+const { resolveAddresses, composeBanner } = require('../lib/banner')
 
 // ── Minimal argv parser ───────────────────────────────────────────────────────
 
@@ -18,6 +18,9 @@ function parseArgs(argv) {
     else if (a === '--name' || a === '-n') out.name = argv[++i]
     else if (a === '--key-file') out.keyFile = argv[++i]
     else if (a === '--no-docs') out.noDocs = true
+    else if (a === '--no-qr') out.noQr = true
+    else if (a === '--tailscale') out.tailscale = true
+    else if (a === '--lan') out.lan = true
     else if (a === '--ollama') out.ollama = true
     else if (a === '--ollama-model') out.ollamaModel = argv[++i]
     else if (a === '--ollama-url') out.ollamaUrl = argv[++i]
@@ -38,6 +41,10 @@ Options:
       --no-docs           Run as URL relay only (no file serving)
   -n, --name <name>       Display name (default "Nutshell Server", env NUTSHELL_NAME)
       --key-file <path>   API key file (default ./.nutshell-api-key)
+      --tailscale         Display only the Tailscale address; error if absent
+      --lan               Display only the LAN address; error if absent
+      --no-qr             Suppress the connection QR block (used when the
+                          VS Code extension spawns the server)
       --ollama            Enable local LLM proxy via Ollama
       --ollama-model <m>  Ollama model (default llama3.2:3b)
       --ollama-url <url>  Ollama address (default http://localhost:11434)
@@ -45,35 +52,10 @@ Options:
   -v, --version           Show version
 
 The API key is generated on first run and saved to the key file.
-Paste it into the Nutshell browser extension and the phone app settings.
+Scan the QR code from the phone app, or paste the printed URL into the
+browser extension. Localhost is intentionally not displayed — every
+client connects from a different network namespace.
 `)
-}
-
-function getLanIp() {
-  for (const ifaces of Object.values(os.networkInterfaces())) {
-    for (const iface of ifaces) {
-      if (iface.family === 'IPv4' && !iface.internal) return iface.address
-    }
-  }
-  return 'localhost'
-}
-
-function getLocalHostname() {
-  const raw = os.hostname()
-  const base = raw.endsWith('.local') ? raw.slice(0, -'.local'.length) : raw
-  return `${base}.local`
-}
-
-function getTailscaleIp() {
-  for (const ifaces of Object.values(os.networkInterfaces())) {
-    for (const iface of ifaces) {
-      if (iface.family === 'IPv4' && !iface.internal) {
-        const parts = iface.address.split('.').map(Number)
-        if (parts[0] === 100 && parts[1] >= 64 && parts[1] <= 127) return iface.address
-      }
-    }
-  }
-  return null
 }
 
 async function main() {
@@ -105,48 +87,39 @@ async function main() {
   const server = createServer({ port, docsPath, name, keyFilePath, ollama })
   await server.start()
 
-  const ip = getLanIp()
-  const hostname = getLocalHostname()
-  const tsIp = getTailscaleIp()
+  const mode = args.tailscale ? 'tailscale' : args.lan ? 'lan' : 'auto'
+  let addresses
+  try {
+    addresses = resolveAddresses({ mode })
+  } catch (err) {
+    console.error(`\n  ${err.message}\n`)
+    process.exit(2)
+  }
 
-  console.log('')
-  console.log(`  ${name} — Nutshell Server`)
+  const pkg = require('../package.json')
+  const banner = await composeBanner({
+    name,
+    version: pkg.version,
+    port,
+    apiKey: server.apiKey,
+    cwd: process.cwd(),
+    addresses,
+    showQr: !args.noQr,
+    llmModel: server.llmModel,
+    llmReady: server.llmReady,
+    llmUrl: server.llmUrl,
+    llmProbeError: server.llmProbeError,
+    isFirstRun: server.isFirstRun,
+  })
+  process.stdout.write(`\n${banner}`)
+
   if (server.projectCount > 0) {
-    console.log(`  Projects: ${server.projectCount} registered`)
+    console.log(`Projects: ${server.projectCount} registered`)
     for (const p of server.projects) {
-      console.log(`            · ${p.name}  (${p.docsPath})`)
+      console.log(`  · ${p.name}  (${p.docsPath || `push, ${p.fileCount} files`})`)
     }
-  } else {
-    console.log('  Projects: (none yet — register via POST /projects/register)')
-  }
-  if (server.llmModel) {
-    if (server.llmReady) {
-      console.log(`  LLM:      ${server.llmModel} via Ollama at ${server.llmUrl}`)
-    } else {
-      console.log(`  LLM:      disabled — ${server.llmProbeError}`)
-      console.log(`            (server running without LLM; POST /llm will return 503)`)
-    }
-  }
-  console.log('  Encrypted with AES-256-GCM · key is never transmitted')
-  console.log('')
-  if (server.isFirstRun) {
-    console.log('  ── First run: API key generated ──────────────────────────')
-  }
-  if (tsIp) {
-    console.log(`  Tailscale: ${tsIp}:${port}`)
-  }
-  console.log(`  LAN:       ${hostname}:${port}`)
-  console.log(`  LAN:       ${ip}:${port}`)
-  console.log(`  Local:     localhost:${port}   ← for the browser extension`)
-  console.log(`  Key:       ${server.apiKey}`)
-  if (server.isFirstRun) {
     console.log('')
-    console.log('  Paste this key into the Nutshell browser extension')
-    console.log('  and the Nutshell phone app Settings → Nutshell Server.')
-    console.log('  Key is saved in .nutshell-api-key — do not commit this file.')
-    console.log('  ──────────────────────────────────────────────────────────')
   }
-  console.log('')
 
   const shutdown = async () => {
     console.log('\n  Shutting down...')

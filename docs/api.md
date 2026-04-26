@@ -490,6 +490,51 @@ re-probe `/health` after a short delay.
 
 ## Changelog
 
+### 0.7.0 — banner redesign + connection QR + network flags
+
+The CLI banner is rewritten to mirror the Even Terminal layout: ASCII
+"E" logo on the left, a key/value column on the right (server name +
+version, Tailscale, LAN, truncated key, CWD), the tagline, then a
+connection block showing the full key, the connect URL, and a
+QR-rendered version of the same URL.
+
+**Localhost is no longer displayed anywhere** in the banner.
+Every Nutshell client (phone, browser extension, VS Code extension)
+connects from a different network namespace; localhost was always
+misleading. The browser extension still defaults to `localhost:4242`
+in its own popup as a same-machine convenience.
+
+URL format encoded in the QR and printed below it:
+
+```
+http://<host>:<port>?key=<api-key>
+```
+
+Phone clients parse host + port + key from this URL to populate the
+connection form. The query-string `?key=` is informational only — the
+server's auth is unchanged (PSK envelope).
+
+**New CLI flags:**
+
+- `--tailscale` — only display the Tailscale address. Errors with a
+  clear message if no Tailscale interface is detected. Useful when
+  multiple network paths exist and you want to be unambiguous about
+  which one phones should use.
+- `--lan` — counterpart to `--tailscale`. Only display LAN.
+- `--no-qr` — suppress the connection block (URL + QR + tagline).
+  The VS Code extension passes this when spawning the server, since
+  the extension already manages credentials directly via
+  `.nutshell-api-key`.
+
+The default (no flag) prefers Tailscale if present, otherwise falls
+back to LAN. Both are displayed in the banner; the QR encodes the
+primary (Tailscale) when available.
+
+New dep: `qrcode-terminal` (~5 KB, MIT). No wire change.
+
+Pairing clients: `nutshell-vscode` 0.4.2 (passes `--no-qr` on spawn),
+`nutshell-browser` 0.4.0 (broader `host_permissions` + iOS hint).
+
 ### 0.6.0 — push-mode projects (remote-server support)
 
 Servers can now hold project files in memory rather than reading from
