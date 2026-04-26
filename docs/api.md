@@ -343,7 +343,11 @@ All events are encrypted envelopes. Payloads:
 | `note-updated` | `{type, id, title}` | `POST /notes/upsert` overwrites existing |
 | `note-removed` | `{type, id}` | `POST /notes/delete` succeeds |
 
-Clients filter by `type` and dispatch.
+Clients filter by `type` and dispatch. Note: the phone client (`even/`)
+intentionally does not act on `note-*` events — the phone is the source
+of truth for its own note set, so accepting a remote-initiated delete
+would let any other client wipe local notes. The events are still
+broadcast for future siblings (read-only dashboards, cross-device sync).
 
 ## `POST /admin/shutdown`
 

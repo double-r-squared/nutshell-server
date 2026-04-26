@@ -134,7 +134,44 @@ function createServer(options = {}) {
         } catch {}
       }
     }
+    if (event.type) {
+      console.log(`[ws] broadcast ${event.type} -> ${count} client${count !== 1 ? 's' : ''}`)
+    }
     return count
+  }
+
+  function clientAddr(req) {
+    return (
+      req.headers['x-forwarded-for']?.toString().split(',')[0].trim() ||
+      req.socket?.remoteAddress?.replace(/^::ffff:/, '') ||
+      'unknown'
+    )
+  }
+
+  // Wrap decryptBody to log auth failures with a reason. The wire format
+  // is opaque to clients (they just get 401), but the server log shows
+  // whether the key was wrong, the envelope was malformed, etc.
+  async function decryptBodyLogged(req, scope) {
+    try {
+      const envelope = await readJsonBody(req)
+      try {
+        const plain = decrypt(envelope, API_KEY)
+        return JSON.parse(plain)
+      } catch (err) {
+        console.warn(
+          `[auth] ${scope} rejected from ${clientAddr(req)} — key mismatch or malformed envelope (${err.message})`,
+        )
+        const e = new Error('unauthorized')
+        e.authFail = true
+        throw e
+      }
+    } catch (err) {
+      if (err.authFail) throw err
+      console.warn(`[auth] ${scope} rejected from ${clientAddr(req)} — bad request body (${err.message})`)
+      const e = new Error('unauthorized')
+      e.authFail = true
+      throw e
+    }
   }
 
   // ── Projects ──────────────────────────────────────────────────────────────
@@ -155,6 +192,7 @@ function createServer(options = {}) {
 
     // Tear down the old watcher if re-registering an existing project.
     const prev = projects.get(id)
+    const isNew = !prev
     if (prev && prev.watcher) {
       try { prev.watcher.close() } catch {}
     }
@@ -165,17 +203,24 @@ function createServer(options = {}) {
     const project = { id, name: projectName, docsPath: absPath, watcher }
     projects.set(id, project)
     broadcast({ type: 'project-registered', id, name: projectName })
+    console.log(
+      `[projects] ${isNew ? 'registered' : 're-registered'} ${id} "${projectName}" -> ${absPath} (total: ${projects.size})`,
+    )
     return project
   }
 
   function unregisterProject(id) {
     const proj = projects.get(id)
-    if (!proj) return false
+    if (!proj) {
+      console.log(`[projects] unregister no-op (id ${id} not found)`)
+      return false
+    }
     if (proj.watcher) {
       try { proj.watcher.close() } catch {}
     }
     projects.delete(id)
     broadcast({ type: 'project-unregistered', id })
+    console.log(`[projects] unregistered ${id} "${proj.name}" (total: ${projects.size})`)
     return true
   }
 
@@ -184,6 +229,20 @@ function createServer(options = {}) {
   async function handleRequest(req, res) {
     const url = new URL(req.url, 'http://localhost')
     const { pathname } = url
+    const startedAt = Date.now()
+    const addr = clientAddr(req)
+
+    // /health is high-frequency (heartbeat polls every 30s) -- skip noisy
+    // logging there and for OPTIONS preflight. Everything else gets logged.
+    const skipLog = pathname === '/health' || req.method === 'OPTIONS'
+    if (!skipLog) {
+      console.log(`[req] ${req.method} ${pathname} from ${addr}`)
+    }
+    res.on('finish', () => {
+      if (skipLog) return
+      const ms = Date.now() - startedAt
+      console.log(`[req] ${req.method} ${pathname} -> ${res.statusCode} in ${ms} ms`)
+    })
 
     if (req.method === 'OPTIONS') {
       res.writeHead(204, CORS_HEADERS)
@@ -587,10 +646,13 @@ function createServer(options = {}) {
 
   // ── WebSocket ─────────────────────────────────────────────────────────────
 
-  function handleConnection(ws) {
+  function handleConnection(ws, req) {
     let authenticated = false
+    const addr = req ? clientAddr(req) : 'unknown'
+    console.log(`[ws] connection opened from ${addr}`)
     const timeout = setTimeout(() => {
       if (!authenticated) {
+        console.warn(`[ws] hello timeout from ${addr}`)
         try { ws.close(4401, 'hello timeout') } catch {}
       }
     }, WS_HELLO_TIMEOUT_MS)
@@ -599,20 +661,30 @@ function createServer(options = {}) {
       if (authenticated) return
       let envelope
       try { envelope = JSON.parse(raw.toString('utf8')) }
-      catch { ws.close(4400, 'malformed'); return }
+      catch {
+        console.warn(`[ws] malformed envelope from ${addr}`)
+        ws.close(4400, 'malformed'); return
+      }
 
       let plain
       try { plain = decrypt(envelope, API_KEY) }
-      catch { ws.close(4401, 'unauthorized'); return }
+      catch {
+        console.warn(`[ws] auth rejected from ${addr} — key mismatch`)
+        ws.close(4401, 'unauthorized'); return
+      }
 
       let msg
       try { msg = JSON.parse(plain) }
-      catch { ws.close(4400, 'malformed'); return }
+      catch {
+        console.warn(`[ws] malformed plaintext from ${addr}`)
+        ws.close(4400, 'malformed'); return
+      }
 
       if (msg && msg.type === 'hello') {
         authenticated = true
         clearTimeout(timeout)
         clients.add(ws)
+        console.log(`[ws] authenticated ${addr} (total: ${clients.size})`)
         try {
           ws.send(
             JSON.stringify(
@@ -629,16 +701,21 @@ function createServer(options = {}) {
         } catch {}
         return
       }
+      console.warn(`[ws] expected hello from ${addr}, got ${msg?.type}`)
       ws.close(4400, 'expected hello')
     })
 
     ws.on('close', () => {
       clearTimeout(timeout)
-      clients.delete(ws)
+      const wasMember = clients.delete(ws)
+      if (wasMember || authenticated) {
+        console.log(`[ws] closed from ${addr} (total: ${clients.size})`)
+      }
     })
-    ws.on('error', () => {
+    ws.on('error', (err) => {
       clearTimeout(timeout)
       clients.delete(ws)
+      console.warn(`[ws] error from ${addr}: ${err.message}`)
     })
   }
 
@@ -658,7 +735,7 @@ function createServer(options = {}) {
 
     httpServer = http.createServer(handleRequest)
     wss = new WebSocketServer({ noServer: true })
-    wss.on('connection', handleConnection)
+    wss.on('connection', (ws, req) => handleConnection(ws, req))
 
     httpServer.on('upgrade', (req, socket, head) => {
       const u = new URL(req.url, 'http://localhost')
@@ -731,4 +808,4 @@ function createServer(options = {}) {
   }
 }
 
-module.exports = { createServer, encrypt, decrypt }
+module.exports = { createServer }
