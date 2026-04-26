@@ -13,6 +13,7 @@ node_modules/
 # Claude Code / agent workspace
 .claude/
 memory/
+notes/
 
 # Secrets / runtime artifacts — NEVER commit
 .nutshell-api-key
