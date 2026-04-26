@@ -380,6 +380,26 @@ re-probe `/health` after a short delay.
 
 ## Changelog
 
+### 0.5.1 — request and connection logging
+
+Per-request and connection-lifecycle logging so remote-mode debugging
+(e.g. from the VS Code extension) is no longer a silent black box.
+
+- `[req] METHOD /path from <addr>` on every incoming request, then
+  `[req] METHOD /path -> <status> in <ms>` on response (skipping
+  `/health` heartbeats and `OPTIONS` preflight to avoid spam).
+- `[auth] /<path> rejected from <addr> — key mismatch or malformed
+  envelope` when the encrypted-envelope decrypt fails.
+- `[projects] registered/re-registered/unregistered <id> "<name>" ->
+  <path> (total: N)` for project lifecycle.
+- `[ws] connection opened from <addr>` / `authenticated` /
+  `hello timeout` / `auth rejected — key mismatch` / `closed`,
+  with running client count.
+- `[ws] broadcast <type> -> N client(s)` for outbound broadcasts.
+
+No wire change. Internal cleanup: `module.exports` no longer re-exports
+`encrypt` / `decrypt` (no consumer used them).
+
 ### 0.5.0 — remote admin endpoints
 
 - New endpoint `POST /admin/shutdown` — authenticated graceful shutdown.
