@@ -534,6 +534,54 @@ function createServer(options = {}) {
       return
     }
 
+    // ── Admin endpoints ────────────────────────────────────────────────
+    // Remote management. Used by the VS Code extension in remote mode.
+
+    // /admin/shutdown — graceful shutdown. Respond first, then tear down.
+    if (req.method === 'POST' && pathname === '/admin/shutdown') {
+      try {
+        await decryptBody(req)
+      } catch {
+        sendJson(res, 401, { error: 'Unauthorized' })
+        return
+      }
+      console.log('[admin] shutdown requested by remote client')
+      sendEncrypted(res, 200, JSON.stringify({ ok: true, action: 'shutdown' }))
+      // Defer shutdown so the response has time to flush.
+      setTimeout(async () => {
+        await stop()
+        process.exit(0)
+      }, 200)
+      return
+    }
+
+    // /admin/restart — hot-restart: close listeners, re-create, re-listen.
+    // Projects and notes survive (the project map is rebuilt by clients
+    // re-registering via heartbeat). Useful when the server needs to pick up
+    // config changes without a full process exit.
+    if (req.method === 'POST' && pathname === '/admin/restart') {
+      try {
+        await decryptBody(req)
+      } catch {
+        sendJson(res, 401, { error: 'Unauthorized' })
+        return
+      }
+      console.log('[admin] restart requested by remote client')
+      sendEncrypted(res, 200, JSON.stringify({ ok: true, action: 'restart' }))
+      // Defer restart so the response has time to flush.
+      setTimeout(async () => {
+        try {
+          await stop()
+          await start()
+          console.log(`[admin] restarted — listening on :${port}`)
+        } catch (err) {
+          console.error(`[admin] restart failed: ${err.message}`)
+          process.exit(1)
+        }
+      }, 200)
+      return
+    }
+
     sendJson(res, 404, { error: 'Not found' })
   }
 

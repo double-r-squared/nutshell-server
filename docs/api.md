@@ -345,7 +345,48 @@ All events are encrypted envelopes. Payloads:
 
 Clients filter by `type` and dispatch.
 
+## `POST /admin/shutdown`
+
+Graceful remote shutdown. Authenticated via the PSK envelope. The server
+sends 200, then tears down listeners and exits after a short flush delay.
+
+**Request (decrypted)**: `{}`
+
+**Response 200 (decrypted)**: `{ "ok": true, "action": "shutdown" }`
+
+Side effect: the server process calls `stop()` and exits with code 0
+approximately 200 ms after responding. If the server is managed by a process
+supervisor (pm2, systemd), it will be restarted by the supervisor.
+
+## `POST /admin/restart`
+
+Hot-restart: close all listeners and WebSocket connections, then re-create
+and re-listen on the same port. Projects are cleared (clients re-register
+via heartbeat). No process exit.
+
+**Request (decrypted)**: `{}`
+
+**Response 200 (decrypted)**: `{ "ok": true, "action": "restart" }`
+
+Side effect: existing WS connections are dropped. The server is briefly
+unreachable (~200 ms) while the HTTP listener restarts. Clients should
+re-probe `/health` after a short delay.
+
+---
+
 ## Changelog
+
+### 0.5.0 — remote admin endpoints
+
+- New endpoint `POST /admin/shutdown` — authenticated graceful shutdown.
+  Responds 200, then calls `stop()` + `process.exit(0)` after a 200 ms
+  flush delay.
+- New endpoint `POST /admin/restart` — authenticated hot-restart. Tears
+  down all listeners, WS connections, and project watchers, then
+  re-creates and re-listens on the same port. Projects are cleared
+  (clients re-register via heartbeat).
+- Used by `nutshell-vscode` 0.3.0+ in remote mode to manage the server
+  lifecycle without SSH or manual intervention.
 
 ### 0.4.2 — `start-with-llm.sh` bootstraps Node.js
 
