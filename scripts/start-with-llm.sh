@@ -1,24 +1,33 @@
 #!/usr/bin/env bash
 # Starts nutshell-server with the Ollama proxy enabled. Handles the boring
-# parts: checks Ollama is installed, starts the daemon if it isn't running,
-# pulls the model if it isn't already on disk, then starts the server.
+# parts: checks Node, npm, and Ollama are installed, ensures dependencies
+# are present, starts the Ollama daemon if it isn't running, pulls the
+# model if missing, then starts the server.
 #
 # Usage:
 #   bash scripts/start-with-llm.sh                     # defaults
-#   bash scripts/start-with-llm.sh --install           # also install Ollama if missing
+#   bash scripts/start-with-llm.sh --install           # auto-install Node + Ollama if missing
 #   bash scripts/start-with-llm.sh --port 4245         # extra args pass through
 #   OLLAMA_MODEL=qwen2.5:7b bash scripts/start-with-llm.sh
+#
+# With --install on Linux: Node.js is installed via nvm in user space (no
+# sudo). On macOS: via Homebrew. Distro packages (apt/yum) are deliberately
+# avoided because their Node versions usually trail the >=18 the server
+# needs.
 #
 # Respects env vars:
 #   OLLAMA_MODEL     default llama3.2:3b
 #   OLLAMA_URL       default http://localhost:11434
+#   NODE_VERSION     default 20    (used only when bootstrapping via nvm)
 
 set -euo pipefail
 
 MODEL="${OLLAMA_MODEL:-llama3.2:3b}"
 URL="${OLLAMA_URL:-http://localhost:11434}"
+NODE_VERSION="${NODE_VERSION:-20}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-LOG_FILE="${SCRIPT_DIR}/../.ollama.log"
+REPO_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+LOG_FILE="${REPO_DIR}/.ollama.log"
 
 # Strip --install from passthrough args but remember whether it was set.
 WANT_INSTALL=0
@@ -56,6 +65,81 @@ install_ollama() {
   esac
   command -v ollama >/dev/null 2>&1 || die "Ollama install finished but 'ollama' is still not on PATH. Try opening a new terminal."
 }
+
+# Install Node + npm. Linux uses nvm in $HOME (no sudo, gives us Node 18+
+# regardless of what the distro ships). macOS uses Homebrew.
+install_node() {
+  local os
+  os="$(uname -s)"
+  case "$os" in
+    Darwin)
+      if command -v brew >/dev/null 2>&1; then
+        say "Installing Node.js via Homebrew"
+        brew install node
+      else
+        die "Homebrew not found. Install from https://brew.sh or install Node.js manually from https://nodejs.org"
+      fi
+      ;;
+    Linux)
+      if [ ! -d "$HOME/.nvm" ]; then
+        say "Installing nvm in \$HOME/.nvm"
+        curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash
+      fi
+      # Source nvm into this shell — its installer adds the lines to
+      # ~/.bashrc but they only apply to new shells.
+      export NVM_DIR="$HOME/.nvm"
+      # shellcheck source=/dev/null
+      [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+      say "Installing Node.js v${NODE_VERSION} via nvm"
+      nvm install "${NODE_VERSION}"
+      nvm use "${NODE_VERSION}"
+      ;;
+    *)
+      die "Automatic install not supported on $os. Install Node.js >=18 manually from https://nodejs.org"
+      ;;
+  esac
+  command -v node >/dev/null 2>&1 || die "Node install finished but 'node' is still not on PATH. Open a new terminal and rerun."
+  command -v npm  >/dev/null 2>&1 || die "Node install finished but 'npm' is still not on PATH. Open a new terminal and rerun."
+}
+
+# ── 0. Is Node.js installed? ──────────────────────────────────────────────────
+
+if ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1; then
+  if [ "$WANT_INSTALL" = "1" ]; then
+    install_node
+  else
+    cat <<EOF >&2
+
+Node.js / npm not found.
+
+Install options:
+  --install flag    bash scripts/start-with-llm.sh --install   (uses nvm on Linux, brew on macOS)
+  Linux manual      curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash
+                    then: nvm install 20 && nvm use 20
+  macOS manual      brew install node
+  Windows manual    https://nodejs.org
+
+Re-run this script after installation, or pass --install to bootstrap automatically.
+
+EOF
+    exit 1
+  fi
+fi
+
+# Server requires Node 18+. Block early with a clear message instead of
+# letting node throw a confusing syntax error on optional chaining or
+# top-level await much later.
+NODE_MAJOR="$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)"
+if [ "${NODE_MAJOR}" -lt 18 ] 2>/dev/null; then
+  die "Node $(node -v) is too old. Install >=18 (rerun with --install for the automated path)."
+fi
+
+# Make sure repo deps are present. First-time run on a fresh machine
+# wouldn't have node_modules even after Node is installed.
+if [ ! -d "${REPO_DIR}/node_modules" ]; then
+  say "Installing repo dependencies (npm install)"
+  (cd "${REPO_DIR}" && npm install --no-audit --no-fund --loglevel=error)
+fi
 
 # ── 1. Is Ollama installed? ───────────────────────────────────────────────────
 

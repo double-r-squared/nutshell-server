@@ -45,6 +45,6 @@ Disallowed — strip, do not translate, do not wrap in anything:
 - Source has no discernible title: invent a short, accurate one from the content.
 - Source is already well-formatted: still pass it through these rules; strip any disallowed syntax.
 - Source contains a table: each row becomes a list item using `- Column: value; Column: value`. The table's caption (if any) becomes a `##` heading above the list.
-- Source has code snippets: reproduce them as indented plain text without the fences or backticks. If the note is about the code's behavior rather than the exact syntax, summarizing with words is preferred.
+- Source has code snippets: reproduce them as plain text lines, with each original line of code on its own line. Strip backticks, fenced markers, and syntax-highlighting artifacts — but PRESERVE the original line breaks so the reader can tell where one statement ends and the next begins. Do not flatten multi-line code into a paragraph. If the note is about the code's behavior rather than the exact syntax, a natural-language description is preferred.
 
 Return only the reformatted note.

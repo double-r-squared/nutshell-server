@@ -131,9 +131,26 @@ scripts/start-with-llm.sh
 npm run start:llm
 ```
 
-Wraps the CLI with Ollama setup: checks for Ollama, starts the daemon if it
-isn't running, pulls the model if missing, then starts the server with
-`--ollama` and `--no-docs`.
+Wraps the CLI with full bootstrap: checks for Node.js, npm, and Ollama;
+runs `npm install` if `node_modules` is missing; starts the Ollama daemon
+if it isn't running; pulls the model if missing; then starts the server
+with `--ollama` and `--no-docs`.
+
+With `--install`, missing dependencies are installed automatically:
+
+- **Linux:** Node.js via [nvm](https://github.com/nvm-sh/nvm) in
+  `$HOME/.nvm` (no sudo, pinned to Node 20 by default — override via
+  `NODE_VERSION=18 bash scripts/start-with-llm.sh --install`). Ollama via
+  the official upstream installer.
+- **macOS:** Both Node and Ollama via Homebrew (`brew install node ollama`).
+
+Distro packages (`apt install nodejs`, `dnf install nodejs`) are
+deliberately not used — Ubuntu LTS and RHEL ship Node versions older than
+the >=18 the server needs, so they would "succeed" but fail at runtime.
+
+The `--install` flag makes the script a true one-touch bootstrap: SSH into
+a fresh Linux box, clone the repo, run `bash scripts/start-with-llm.sh
+--install`, done.
 
 **Why `--no-docs`?** The script is designed for the multi-tenant workflow:
 clients (VS Code extension) register their own projects over HTTP at runtime,

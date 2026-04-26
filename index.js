@@ -9,11 +9,13 @@ const { ensureKey } = require('./lib/auth')
 const { encrypt, decrypt } = require('./lib/crypto')
 const { scanFiles, readFile } = require('./lib/files')
 const { createWatcher } = require('./lib/watcher')
+const notesStore = require('./lib/notes')
 const {
   probeOllama,
   proxyChatCompletion,
   DEFAULT_URL: OLLAMA_DEFAULT_URL,
   DEFAULT_MODEL: OLLAMA_DEFAULT_MODEL,
+  LIVE_PROBE_TIMEOUT_MS,
 } = require('./lib/llm')
 
 // ── Public library entry ──────────────────────────────────────────────────────
@@ -32,6 +34,17 @@ const CORS_HEADERS = {
 
 const WS_HELLO_TIMEOUT_MS = 5_000
 const DEFAULT_PROJECT_ID = 'default'
+
+// Tiny log-formatting helpers used by the /llm progress lines.
+function formatBytes(n) {
+  if (n < 1024) return `${n} B`
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
+  return `${(n / 1024 / 1024).toFixed(1)} MB`
+}
+function formatDuration(ms) {
+  if (ms < 1000) return `${ms} ms`
+  return `${(ms / 1000).toFixed(2)} s`
+}
 
 function createServer(options = {}) {
   const port = options.port || 4242
@@ -58,6 +71,15 @@ function createServer(options = {}) {
 
   // Registered projects. Each has its own chokidar watcher.
   const projects = new Map()
+
+  // Notes storage. JSON-on-disk under <cwd>/notes/. The phone is the schema
+  // authority; this server just round-trips opaque objects keyed by id.
+  // Survives restarts; survives the phone's beta repackages (which is the
+  // whole point — notes outlive the webview origin).
+  const notesDir = options.notesDir
+    ? path.resolve(options.notesDir)
+    : path.join(path.dirname(keyFilePath), 'notes')
+  notesStore.ensureDir(notesDir)
 
   // ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -306,6 +328,55 @@ function createServer(options = {}) {
       return
     }
 
+    // /llm/ping — fast liveness probe for the local LLM. Used by clients
+    // to decide whether to commit to a local-LLM call or fall back fast.
+    // 200 + { ready: true, model } when Ollama is up and the configured
+    // model is pulled. 503 + { ready: false, reason } otherwise.
+    if (req.method === 'POST' && pathname === '/llm/ping') {
+      try {
+        await decryptBody(req)
+      } catch {
+        sendJson(res, 401, { error: 'Unauthorized' })
+        return
+      }
+      if (!ollama.enabled) {
+        sendEncrypted(res, 503, JSON.stringify({
+          ready: false,
+          reason: 'LLM not enabled on this server',
+        }))
+        return
+      }
+      const probe = await probeOllama({
+        url: ollama.url,
+        model: ollama.model,
+        timeoutMs: LIVE_PROBE_TIMEOUT_MS,
+      })
+      if (!probe.ok) {
+        sendEncrypted(res, 503, JSON.stringify({
+          ready: false,
+          reason: probe.error || 'probe failed',
+          model: probe.model,
+        }))
+        return
+      }
+      // Model-not-pulled returns ok:true with an error field; treat as
+      // not-ready for routing purposes so the client doesn't hit /llm with
+      // a missing model.
+      if (probe.error) {
+        sendEncrypted(res, 503, JSON.stringify({
+          ready: false,
+          reason: probe.error,
+          model: probe.model,
+        }))
+        return
+      }
+      sendEncrypted(res, 200, JSON.stringify({
+        ready: true,
+        model: probe.model,
+      }))
+      return
+    }
+
     // /llm — OpenAI-compatible chat completion proxy (unchanged)
     if (req.method === 'POST' && pathname === '/llm') {
       let payload
@@ -315,7 +386,16 @@ function createServer(options = {}) {
         sendJson(res, 401, { error: 'Unauthorized' })
         return
       }
+      // Short request id so concurrent calls can be followed in the log.
+      const reqId = Math.random().toString(36).slice(2, 8)
+      const reqBytes = Buffer.byteLength(JSON.stringify(payload))
+      const msgCount = Array.isArray(payload?.messages) ? payload.messages.length : 0
+      console.log(
+        `[llm ${reqId}] received — ${formatBytes(reqBytes)}, ${msgCount} message${msgCount !== 1 ? 's' : ''}`,
+      )
+
       if (!llmReady) {
+        console.warn(`[llm ${reqId}] rejected — ${llmProbeError || 'LLM not enabled'}`)
         sendEncrypted(res, 503, JSON.stringify({
           error: {
             message: llmProbeError || 'LLM not enabled on this server',
@@ -324,10 +404,20 @@ function createServer(options = {}) {
         }))
         return
       }
+      const startedAt = Date.now()
+      console.log(`[llm ${reqId}] inference start — model ${ollama.model}`)
       try {
         const body = await proxyChatCompletion(ollama, payload)
+        const ms = Date.now() - startedAt
+        const usage = body?.usage
+        const tokenInfo = usage
+          ? ` · ${usage.prompt_tokens || 0} in + ${usage.completion_tokens || 0} out tokens`
+          : ''
+        console.log(`[llm ${reqId}] complete in ${formatDuration(ms)}${tokenInfo}`)
         sendEncrypted(res, 200, JSON.stringify(body))
       } catch (err) {
+        const ms = Date.now() - startedAt
+        console.warn(`[llm ${reqId}] failed after ${formatDuration(ms)} — ${err.message}`)
         sendEncrypted(res, err.status || 502, JSON.stringify({
           error: { message: err.message, type: 'upstream' },
         }))
@@ -353,9 +443,94 @@ function createServer(options = {}) {
         type: 'url',
         url: targetUrl,
         title: typeof payload.title === 'string' ? payload.title : undefined,
+        // Optional routing hint from the browser extension. `true` tells the
+        // phone to route this URL's ingest through its local LLM (hard-prefer
+        // mode). The phone still honors its own "use server LLM" OFF toggle
+        // as a veto.
+        preferLocalLlm: payload.preferLocalLlm === true ? true : undefined,
         receivedAt: Date.now(),
       })
       sendEncrypted(res, 200, JSON.stringify({ ok: true, delivered }))
+      return
+    }
+
+    // ── Notes endpoints ──────────────────────────────────────────────────
+    // Phone-managed user notes (file ingests, URL summaries, voice asks,
+    // etc.). Stored as JSON files at <notesDir>/<id>.json. Phone is schema
+    // authority. See lib/notes.js + docs/api.md.
+
+    if (req.method === 'POST' && pathname === '/notes') {
+      try { await decryptBody(req) } catch {
+        sendJson(res, 401, { error: 'Unauthorized' }); return
+      }
+      try {
+        const list = notesStore.listNotes(notesDir)
+        sendEncrypted(res, 200, JSON.stringify(list))
+      } catch (err) {
+        sendEncrypted(res, 500, JSON.stringify({ error: err.message }))
+      }
+      return
+    }
+
+    if (req.method === 'POST' && pathname === '/note') {
+      let payload
+      try { payload = await decryptBody(req) } catch {
+        sendJson(res, 401, { error: 'Unauthorized' }); return
+      }
+      const id = typeof payload.id === 'string' ? payload.id : ''
+      if (!id) {
+        sendEncrypted(res, 400, JSON.stringify({ error: 'Missing id' }))
+        return
+      }
+      const note = notesStore.readNote(notesDir, id)
+      if (!note) {
+        sendEncrypted(res, 404, JSON.stringify({ error: 'Not found' }))
+        return
+      }
+      sendEncrypted(res, 200, JSON.stringify(note))
+      return
+    }
+
+    if (req.method === 'POST' && pathname === '/notes/upsert') {
+      let payload
+      try { payload = await decryptBody(req) } catch {
+        sendJson(res, 401, { error: 'Unauthorized' }); return
+      }
+      // Body is the full Item — we don't validate its shape, just sanity-
+      // check the id so we don't write anywhere unexpected on disk.
+      if (!payload || !notesStore.isValidId(payload.id)) {
+        sendEncrypted(res, 400, JSON.stringify({ error: 'Missing or invalid id' }))
+        return
+      }
+      try {
+        const result = notesStore.upsertNote(notesDir, payload)
+        broadcast({
+          type: result.created ? 'note-added' : 'note-updated',
+          id: payload.id,
+          title: typeof payload.title === 'string' ? payload.title : '',
+        })
+        sendEncrypted(res, 200, JSON.stringify({ ok: true, ...result }))
+      } catch (err) {
+        sendEncrypted(res, 400, JSON.stringify({ error: err.message }))
+      }
+      return
+    }
+
+    if (req.method === 'POST' && pathname === '/notes/delete') {
+      let payload
+      try { payload = await decryptBody(req) } catch {
+        sendJson(res, 401, { error: 'Unauthorized' }); return
+      }
+      const id = typeof payload.id === 'string' ? payload.id : ''
+      if (!id) {
+        sendEncrypted(res, 400, JSON.stringify({ error: 'Missing id' }))
+        return
+      }
+      const result = notesStore.deleteNote(notesDir, id)
+      if (result.removed) {
+        broadcast({ type: 'note-removed', id })
+      }
+      sendEncrypted(res, 200, JSON.stringify({ ok: true, ...result }))
       return
     }
 

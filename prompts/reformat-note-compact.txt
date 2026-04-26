@@ -5,7 +5,8 @@ Rules:
 - Section headings use "## Title Case" (1-4 words). No deeper levels.
 - Short paragraphs (1-3 sentences). Separate with blank lines.
 - Use "- " bullets for lists, enumerations, comparisons, and tables (convert table rows to "- Col: value; Col: value").
-- Strip all inline formatting: bold, italic, code, backticks, links (keep link text), blockquotes, HTML tags, smart quotes, em/en dashes. No horizontal rules.
+- Strip all inline formatting: bold, italic, backticks, fenced code markers, links (keep link text), blockquotes, HTML tags, smart quotes, em/en dashes. No horizontal rules.
+- Code snippets: keep them as plain text lines, one line of code per line. Do not flatten multi-line code into a paragraph. Drop fences and backticks but preserve the original line breaks.
 - Math as plain arithmetic (a + b = c, 5%, x = (a + b) / 2). If a formula can't be expressed with +, -, *, /, =, %, parentheses, describe it in one sentence.
 - Keep every fact, number, and quote from the source. This is reformat, not summarize.
 - If the source is empty, output exactly:

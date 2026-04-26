@@ -1,0 +1,53 @@
+{
+  "id": "item-1777077079667-d1lwig",
+  "createdAt": 1777077079667,
+  "type": "long",
+  "title": "std::runtime_error - cppreference.com",
+  "sections": [
+    {
+      "heading": "Summary",
+      "content": "The std::runtime_error from cppreference defines a type of exception in C++ for errors beyond the program's scope. It includes information on member functions, constructors, and inheritance. Derived exceptions and constructors are discussed, including copy operations, parameters, and potential exceptions. Historical defect reports are noted, highlighting changes in behavior over different C++ standards."
+    },
+    {
+      "heading": "std::runtime_error",
+      "content": "Defined in header <stdexcept>\nclass runtime_error;\n\nDefines a type of object to be thrown as exception. It reports errors that are due to events beyond the scope of the program and cannot be easily predicted.\n\nExceptions of type std::runtime_error are thrown by the following standard library components:\n\n- std::locale::locale\n- std::locale::combine\n- std::chrono::current_zone\n- std::chrono::get_tzdb_list\n- std::chrono::get_tzdb\n- std::chrono::locate_zone\n- std::chrono::reload_tzdb\n- std::chrono::remote_version\n- std::chrono::tzdb::locate_zone(since C++20)\n\nIn addition, the following standard exception types are derived from std::runtime_error:\n\n- std::range_error\n- std::overflow_error\n- std::underflow_error\n- std::ios_base::failure\n- std::regex_error\n- std::system_error(since C++11)\n- std::filesystem::filesystem_error(since C++17)\n- std::chrono::ambiguous_local_time\n- std::chrono::nonexistent_local_time\n- std::format_error(since C++20)"
+    },
+    {
+      "heading": "Member functions",
+      "content": "(constructor)constructs a new runtime_error object with the given message\n\n(public member function)\noperator=replaces the runtime_error object\n\n(public member function)"
+    },
+    {
+      "heading": "std::runtime_error::runtime_error",
+      "content": "runtime_error( const std::string& what_arg );(1)\nruntime_error( const char* what_arg );(2)\nruntime_error( const runtime_error& other );(3)(noexcept since C++11)\n\n1) Constructs the exception object with what_arg as explanatory string. After construction, std::strcmp(what(), what_arg.c_str()) == 0.\n\n2) Constructs the exception object with what_arg as explanatory string. After construction, std::strcmp(what(), what_arg) == 0.\n\n3) Copy constructor. If *this and other both have dynamic type std::runtime_error then std::strcmp(what(), other.what()) == 0. No exception can be thrown from the copy constructor."
+    },
+    {
+      "heading": "Parameters",
+      "content": "what_arg-explanatory string\nother-another exception object to copy"
+    },
+    {
+      "heading": "Exceptions",
+      "content": "1,2) May throw std::bad_alloc."
+    },
+    {
+      "heading": "Notes",
+      "content": "Because copying std::runtime_error is not permitted to throw exceptions, this message is typically stored internally as a separately-allocated reference-counted string. This is also why there is no constructor taking std::string&&: it would have to copy the content anyway.\n\nBefore the resolution of LWG issue 254, the non-copy constructor can only accept std::string. It makes dynamic allocation mandatory in order to construct a std::string object.\n\nAfter the resolution of LWG issue 471, a derived standard exception class must have a publicly accessible copy constructor. It can be implicitly defined as long as the explanatory strings obtained by what() are the same for the original object and the copied object."
+    },
+    {
+      "heading": "std::runtime_error::operator=",
+      "content": "runtime_error& operator=( const runtime_error& other );(noexcept since C++11)\n\nAssigns the contents with those of other. If *this and other both have dynamic type std::runtime_error then std::strcmp(what(), other.what()) == 0 after assignment. No exception can be thrown from the copy assignment operator."
+    },
+    {
+      "heading": "Return value",
+      "content": "*this"
+    },
+    {
+      "heading": "Inherited from std::exception",
+      "content": "Destructor: destroys the exception object\n\nWhat: returns an explanatory string\n\nThese functions are virtual public member functions of std::exception."
+    },
+    {
+      "heading": "Defect reports",
+      "content": "The following behavior-changing defect reports were applied retroactively to previously published C++ standards.\n\n| DR | Applied to | Behavior as published | Correct behavior |\n| --- | --- | --- | --- |\n| LWG 254 | C++98 | the constructor accepting const char* was missing | added |\n| LWG 471 | C++98 | the explanatory strings of std::runtime_error's copies were implementation-defined | they are the same as that of the original std::runtime_error object |"
+    }
+  ],
+  "lastActiveAt": 1777077116209
+}

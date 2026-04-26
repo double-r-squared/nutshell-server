@@ -1,11 +1,23 @@
+# Dependencies
 node_modules/
+
+# Logs
+*.log
+.ollama.log
+
+# OS / editor
+.DS_Store
+.vscode/*
+!.vscode/extensions.json
+
+# Claude Code / agent workspace
+.claude/
+memory/
+
+# Secrets / runtime artifacts — NEVER commit
 .nutshell-api-key
 .docs-api-key
 .url-api-key
-.ollama.log
-*.log
-.DS_Store
-
-./.nutshell-api-key
-
-./.ollama.log
+.env
+.env.*
+!.env.example

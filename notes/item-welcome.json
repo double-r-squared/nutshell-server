@@ -1,0 +1,57 @@
+{
+  "id": "item-welcome",
+  "title": "Welcome to Nutshell",
+  "type": "long",
+  "createdAt": 1777076691699,
+  "sections": [
+    {
+      "heading": "What this is",
+      "content": "Nutshell turns anything you capture into a readable HUD view on your G2 glasses. The phone does the heavy lifting and the glasses just display. Delete this note any time you like and it will not come back."
+    },
+    {
+      "heading": "Capture: URLs",
+      "content": "Paste a link into the URL box on the phone and tap Go. Nutshell fetches the page through Jina Reader, strips the clutter, and sends a clean summary with chapters to the glasses."
+    },
+    {
+      "heading": "Capture: files and images",
+      "content": "Pick a .txt, .md, .pdf, or an image and tap Summarize. Text files and PDFs are summarized into chapters. Images are read via OCR so you can snap a page of a book or a slide and get a readable version on your glasses."
+    },
+    {
+      "heading": "Capture: raw Markdown upload",
+      "content": "For .md files you can also tap Upload instead of Summarize. That skips the LLM and sends the file to the glasses verbatim. Headings that start with # become chapters and nested headings are indented under the top level so you can see the structure."
+    },
+    {
+      "heading": "Reading on the glasses",
+      "content": "The home screen is a scrollable list of your notes newest first. Scroll to highlight and tap to open. The overview splits the screen with a chapter list on the left and a preview on the right. Tap a chapter to enter the reading view. In reading view scrolling pages the full text and double tap returns to the overview."
+    },
+    {
+      "heading": "Ask: voice questions",
+      "content": "While reading a note you can ask a voice question about it. The Ask view is a half-screen bordered overlay that drops in at the top of the reading page. The reading text stays visible in the bottom half behind it. Hold for at least a second, then single tap to send, or double tap to dismiss. The answer replaces Listening in the same overlay so you never lose your place."
+    },
+    {
+      "heading": "QA Bank: every answer is saved",
+      "content": "Every successful question is saved on the current note forever and shown in a half-screen list at the bottom of the reading page. A pending entry is written the moment you send so dismissing mid-flight still records the question. The answer and a short rewritten title fill in automatically when the model finishes."
+    },
+    {
+      "heading": "Errors are ephemeral",
+      "content": "If the model is unreachable, your API key is wrong, or your utterance was too short, the QA Bank will show a short ERROR entry telling you what went wrong. These entries are not kept forever. The next time you open Nutshell, all error entries and any Ask that was still in flight when you closed the app are dropped. Pending answers are rare and not important enough to revive, so they are cleared on restart too."
+    },
+    {
+      "heading": "Head gestures: look up and look down",
+      "content": "While reading you can look up to open Ask hands free and look down to open the QA Bank for the current note. Both are off by default. Turn them on in Settings and run the one time Calibrate flow so the detector learns which axis is pitch on your head. Gestures only fire while you are reading so they never interrupt other screens."
+    },
+    {
+      "heading": "Pull to refresh",
+      "content": "When you are on the first item of the home list a scroll-up gesture on the temple refreshes the list. New notes coming in from the phone also appear live without a reload."
+    },
+    {
+      "heading": "Notes management",
+      "content": "Every note you save persists across app restarts, including your OpenRouter API key and your saved QA Bank entries. On the phone you can export a single note to Markdown, export all notes at once, or delete individual notes."
+    },
+    {
+      "heading": "Settings and API key",
+      "content": "Open the Settings tab on the phone to paste your OpenRouter API key, toggle head gestures, and run gesture calibration. A live Glasses Status panel shows the bridge state, current screen, current note, current chapter, and the last API call. There is also a debug console for troubleshooting."
+    }
+  ],
+  "lastActiveAt": 1777076736402
+}
