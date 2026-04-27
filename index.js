@@ -756,6 +756,8 @@ function createServer(options = {}) {
       // Body is the full Item — we don't validate its shape, just sanity-
       // check the id so we don't write anywhere unexpected on disk.
       if (!payload || !notesStore.isValidId(payload.id)) {
+        const badId = payload && typeof payload.id !== 'undefined' ? JSON.stringify(payload.id) : '(missing)'
+        console.warn(`[notes] upsert rejected from ${clientAddr(req)} — invalid id ${badId}`)
         sendEncrypted(res, 400, JSON.stringify({ error: 'Missing or invalid id' }))
         return
       }
@@ -768,6 +770,7 @@ function createServer(options = {}) {
         })
         sendEncrypted(res, 200, JSON.stringify({ ok: true, ...result }))
       } catch (err) {
+        console.warn(`[notes] upsert failed for "${payload.id}" — ${err.message}`)
         sendEncrypted(res, 400, JSON.stringify({ error: err.message }))
       }
       return

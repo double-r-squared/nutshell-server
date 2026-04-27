@@ -499,6 +499,16 @@ re-probe `/health` after a short delay.
 
 ## Changelog
 
+### 0.7.2 — `[notes] upsert rejected` logging
+
+`POST /notes/upsert` previously responded 400 silently when the
+payload's id failed `isValidId`. Now logs the offending id (and
+requester address) on rejection, and the underlying error message on
+the rare `notesStore.upsertNote` throw path. Unblocks future debugging
+of "the phone said it sent the note but the file isn't on disk."
+
+No wire-format change.
+
 ### 0.7.1 — `version` + `gitSha` on `/health`
 
 `GET /health` now returns two new optional fields: `version` (from
