@@ -24,6 +24,16 @@
 
 set -euo pipefail
 
+# Source nvm so `npm install` (run when package-lock.json changes) can
+# find npm. Non-login shells (launchd / systemd-user / cron) don't read
+# ~/.bashrc, so an nvm-managed npm is invisible without this. Cheap no-op
+# when nvm isn't installed.
+if [ -s "${NVM_DIR:-$HOME/.nvm}/nvm.sh" ] && ! command -v npm >/dev/null 2>&1; then
+  export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
+  # shellcheck source=/dev/null
+  \. "$NVM_DIR/nvm.sh"
+fi
+
 NUTSHELL_HOME="${NUTSHELL_HOME:-$HOME/.nutshell}"
 
 # Config — written by install-updater.sh, sourced here on every cycle.
