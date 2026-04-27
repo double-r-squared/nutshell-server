@@ -41,6 +41,18 @@ First run prints the generated API key. Paste it into:
 - Each **Nutshell VS Code extension** — they auto-read it from
   `.nutshell-api-key` in the workspace root
 
+### Auto-updates (deploy machines)
+
+If this machine exists to host the server (not edit it), set up the
+auto-updater so pushes to `main` deploy themselves:
+
+```bash
+bash scripts/install-updater.sh --ollama
+```
+
+Polls every minute, in-place `git reset --hard origin/main`, restart on
+change. See [`docs/auto-update.md`](docs/auto-update.md).
+
 ### Register projects
 
 In the multi-project world, the VS Code extension is how folders usually get

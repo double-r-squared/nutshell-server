@@ -169,6 +169,16 @@ To run with a legacy single-tenant default project, invoke the CLI directly:
 `nutshell-server --docs ./my-notes --ollama`. `--no-docs` always wins over
 `--docs` when both are set, so passthrough args won't override the script.
 
+### Auto-updater (deploy machines)
+
+For machines that exist solely to host the server, `scripts/install-updater.sh`
+sets up a 60-second polling loop that does `git fetch && git reset --hard
+origin/main` and restarts via `start-with-llm.sh` whenever new commits land.
+State lives at `~/.nutshell/` — outside the repo on purpose, since
+`git reset --hard` would wipe anything inside it. Never move runtime state
+(notes, keys, PID files) into the repo. See [`docs/auto-update.md`](docs/auto-update.md)
+for the full story.
+
 ---
 
 ## Conventions
