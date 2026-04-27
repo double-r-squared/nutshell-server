@@ -22,27 +22,27 @@
 
 set -euo pipefail
 
-# Source nvm if node was installed via nvm but isn't yet on PATH. Non-login
-# shells (launchd, systemd-user, cron) don't read ~/.bashrc, so an
-# nvm-managed node is invisible to them by default. The auto-updater
-# (`scripts/_updater.sh`) runs us in exactly that context.
-if [ -s "${NVM_DIR:-$HOME/.nvm}/nvm.sh" ] && ! command -v node >/dev/null 2>&1; then
+# Source nvm whenever it's installed. Non-login shells (launchd,
+# systemd-user, cron) don't read ~/.bashrc, so an nvm-managed node is
+# invisible to them by default. We source unconditionally rather than
+# only when `node` is missing because a stale system-node on PATH
+# (e.g., apt's `nodejs` package without `npm`) can satisfy the existence
+# check while still failing the npm check downstream.
+if [ -s "${NVM_DIR:-$HOME/.nvm}/nvm.sh" ]; then
   export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
   # shellcheck source=/dev/null
   \. "$NVM_DIR/nvm.sh"
 fi
 
 # Homebrew on Apple Silicon installs to /opt/homebrew, which isn't on the
-# default PATH for non-login shells. Add the standard brew bins if ollama
-# isn't visible — same rationale as the nvm block above.
-if ! command -v ollama >/dev/null 2>&1; then
-  for p in /opt/homebrew/bin /usr/local/bin; do
-    if [ -x "$p/ollama" ]; then
-      export PATH="$p:$PATH"
-      break
-    fi
-  done
-fi
+# default PATH for non-login shells. Prepend the standard brew bins so
+# `ollama` resolves under launchd. Cheap no-op on Linux.
+for p in /opt/homebrew/bin /usr/local/bin; do
+  if [ -x "$p/ollama" ] && [[ ":$PATH:" != *":$p:"* ]]; then
+    export PATH="$p:$PATH"
+    break
+  fi
+done
 
 MODEL="${OLLAMA_MODEL:-llama3.2:3b}"
 URL="${OLLAMA_URL:-http://localhost:11434}"

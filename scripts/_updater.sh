@@ -26,9 +26,10 @@ set -euo pipefail
 
 # Source nvm so `npm install` (run when package-lock.json changes) can
 # find npm. Non-login shells (launchd / systemd-user / cron) don't read
-# ~/.bashrc, so an nvm-managed npm is invisible without this. Cheap no-op
-# when nvm isn't installed.
-if [ -s "${NVM_DIR:-$HOME/.nvm}/nvm.sh" ] && ! command -v npm >/dev/null 2>&1; then
+# ~/.bashrc, so an nvm-managed npm is invisible without this. We source
+# unconditionally rather than gating on `command -v npm` because a stale
+# system node (e.g., apt's `nodejs` without `npm`) can mask the check.
+if [ -s "${NVM_DIR:-$HOME/.nvm}/nvm.sh" ]; then
   export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
   # shellcheck source=/dev/null
   \. "$NVM_DIR/nvm.sh"
