@@ -560,7 +560,9 @@ function createServer(options = {}) {
         sendJson(res, 401, { error: 'Unauthorized' })
         return
       }
+      const pingFrom = clientAddr(req)
       if (!ollama.enabled) {
+        console.log(`[llm-ping] ${pingFrom} → not-ready (LLM not enabled)`)
         sendEncrypted(res, 503, JSON.stringify({
           ready: false,
           reason: 'LLM not enabled on this server',
@@ -573,6 +575,9 @@ function createServer(options = {}) {
         timeoutMs: LIVE_PROBE_TIMEOUT_MS,
       })
       if (!probe.ok) {
+        console.log(
+          `[llm-ping] ${pingFrom} → not-ready (${probe.error || 'probe failed'})`,
+        )
         sendEncrypted(res, 503, JSON.stringify({
           ready: false,
           reason: probe.error || 'probe failed',
@@ -584,6 +589,9 @@ function createServer(options = {}) {
       // not-ready for routing purposes so the client doesn't hit /llm with
       // a missing model.
       if (probe.error) {
+        console.log(
+          `[llm-ping] ${pingFrom} → not-ready (${probe.error})`,
+        )
         sendEncrypted(res, 503, JSON.stringify({
           ready: false,
           reason: probe.error,
@@ -591,6 +599,7 @@ function createServer(options = {}) {
         }))
         return
       }
+      console.log(`[llm-ping] ${pingFrom} → ready (model ${probe.model})`)
       sendEncrypted(res, 200, JSON.stringify({
         ready: true,
         model: probe.model,
@@ -612,7 +621,7 @@ function createServer(options = {}) {
       const reqBytes = Buffer.byteLength(JSON.stringify(payload))
       const msgCount = Array.isArray(payload?.messages) ? payload.messages.length : 0
       console.log(
-        `[llm ${reqId}] received — ${formatBytes(reqBytes)}, ${msgCount} message${msgCount !== 1 ? 's' : ''}`,
+        `[llm ${reqId}] received from ${clientAddr(req)} — ${formatBytes(reqBytes)}, ${msgCount} message${msgCount !== 1 ? 's' : ''}`,
       )
 
       if (!llmReady) {

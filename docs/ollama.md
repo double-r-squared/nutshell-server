@@ -140,6 +140,7 @@ encrypts at the network layer via WireGuard.
 | Probe error `fetch failed` | Wrong `--ollama-url` or firewalled | Confirm with `curl $URL/api/tags` |
 | `/llm` returns `502` | Ollama returned an error to the proxy | Check Ollama's own logs (`~/.ollama/logs/server.log`) |
 | `/llm` returns `503` when you expected `200` | Probe failed at startup | Restart after fixing the probe cause |
+| Phone reports "Local LLM unreachable" but server looks fine | Pings or calls aren't arriving | Watch the server log for `[llm-ping]` (soft-prefer) and `[llm <id>] received from …` lines. No log line means the request never made it; a `not-ready (<reason>)` line tells you why the server declined. |
 
 ## See also
 
