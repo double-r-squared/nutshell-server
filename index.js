@@ -3,6 +3,7 @@
 const http = require('http')
 const path = require('path')
 const fs = require('fs')
+const { execSync } = require('child_process')
 const { WebSocketServer } = require('ws')
 
 const { ensureKey } = require('./lib/auth')
@@ -34,6 +35,30 @@ const CORS_HEADERS = {
 
 const WS_HELLO_TIMEOUT_MS = 5_000
 const DEFAULT_PROJECT_ID = 'default'
+
+// Build identity, captured once at module load. Surfaced on /health so the
+// phone can show "which version + commit am I talking to?" — useful when
+// chasing "is my latest push deployed?" on auto-update boxes. Both fields
+// are optional on the wire; absent when the server isn't running from a
+// git checkout.
+const BUILD_VERSION = (() => {
+  try {
+    return require('./package.json').version || null
+  } catch {
+    return null
+  }
+})()
+const BUILD_GIT_SHA = (() => {
+  try {
+    return execSync('git rev-parse --short HEAD', {
+      cwd: __dirname,
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 1_000,
+    }).toString().trim() || null
+  } catch {
+    return null
+  }
+})()
 
 // Tiny log-formatting helpers used by the /llm progress lines.
 function formatBytes(n) {
@@ -313,6 +338,8 @@ function createServer(options = {}) {
       sendJson(res, 200, {
         ok: true,
         name,
+        version: BUILD_VERSION,
+        gitSha: BUILD_GIT_SHA,
         features: {
           multiProject: true,
           url: true,

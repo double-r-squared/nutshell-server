@@ -26,6 +26,8 @@ encrypted flow.
 {
   "ok": true,
   "name": "My Project",
+  "version": "0.7.1",
+  "gitSha": "c15f8c7",
   "features": {
     "multiProject": true,
     "url": true,
@@ -42,6 +44,13 @@ encrypted flow.
 about. Random UUIDs; safe to expose unauthenticated. Clients use this to
 detect when their project has been evicted (server restart, manual
 unregister) and re-register without re-pushing on every heartbeat.
+
+`version` is the server's `package.json` version. `gitSha` is the short
+SHA of the running checkout (`git rev-parse --short HEAD`). Both fields
+are best-effort: absent when the server isn't running from a git
+checkout (npm-installed package, downloaded tarball). Clients should
+treat them as optional informational strings — never gate behavior on
+them.
 
 `features.push` advertises that the server understands push-mode
 registrations (`POST /projects/register` with `files[]`) and the
@@ -489,6 +498,19 @@ re-probe `/health` after a short delay.
 ---
 
 ## Changelog
+
+### 0.7.1 — `version` + `gitSha` on `/health`
+
+`GET /health` now returns two new optional fields: `version` (from
+`package.json`) and `gitSha` (short SHA of the running checkout, via
+`git rev-parse --short HEAD`). Backwards-compatible — older clients
+ignore the new fields, and clients written against 0.7.1 must treat
+them as optional since servers running from non-git installs (npm,
+tarball) won't populate `gitSha`.
+
+The phone displays `[v0.7.1]` next to the server name in Settings and
+exposes `v0.7.1 · <sha>` as a copyable row in the expanded server card,
+so bug reports can include the exact commit the deploy box is running.
 
 ### 0.7.0 — banner redesign + connection QR + network flags
 
