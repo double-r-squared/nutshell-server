@@ -136,12 +136,17 @@ EOF
 install_systemd() {
   say "Registering systemd user timer (every 60 s)"
   mkdir -p "$SYSTEMD_DIR"
+  # KillMode=process is essential: with the default control-group, systemd
+  # cleans up the entire cgroup when this oneshot's ExecStart returns —
+  # including the nohup-detached server we just spawned. KillMode=process
+  # restricts cleanup to the updater bash itself, leaving the server alive.
   cat >"$SYSTEMD_SERVICE" <<EOF
 [Unit]
 Description=Nutshell server auto-updater (one cycle)
 
 [Service]
 Type=oneshot
+KillMode=process
 ExecStart=/bin/bash %h/.nutshell/updater.sh
 StandardOutput=append:%h/.nutshell/systemd.log
 StandardError=append:%h/.nutshell/systemd.log
