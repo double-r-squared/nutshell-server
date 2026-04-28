@@ -212,6 +212,13 @@ start_server() {
   if ! free_port_if_ours "$(server_port)"; then
     return 1
   fi
+  # Close the lockfile FD before forking. Without this, the server we
+  # spawn (start-with-llm.sh → node bin/cli.js) inherits FD 200 and
+  # keeps the lock indefinitely — every subsequent updater cycle then
+  # fails to acquire and exits silently. Closing the FD here releases
+  # our lock too, which is fine: from this point we're past the
+  # critical section and just verifying the spawn succeeded.
+  exec 200>&-
   # nohup + & so the server outlives this updater process. Logs go to
   # SERVER_LOG; the updater's own activity stays in UPDATER_LOG.
   nohup bash "$launcher" "${LAUNCH_ARGS[@]}" >>"$SERVER_LOG" 2>&1 &
