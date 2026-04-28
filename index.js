@@ -711,6 +711,52 @@ function createServer(options = {}) {
       return
     }
 
+    // /broadcast-status — fire-and-forget cross-client status relay.
+    //
+    // Used by clients that do their own ingest (the new browser extension
+    // pipeline) to surface "I'm working on it / I'm done / I errored" to
+    // OTHER clients (the phone). Lets the phone show "extension: rummaging…"
+    // in its IngestStatus slot without the phone having to participate in
+    // the work itself. Pure observability — no payload, no ingest control.
+    //
+    // Auth: same encrypted envelope as every other client-write endpoint.
+    // Validation: enum on `kind` and `source`, length cap on `label` and
+    // `message`. Out-of-shape inputs land 400 rather than relaying garbage.
+    if (req.method === 'POST' && pathname === '/broadcast-status') {
+      let payload
+      try {
+        payload = await decryptBody(req)
+      } catch {
+        sendJson(res, 401, { error: 'Unauthorized' })
+        return
+      }
+      const VALID_KINDS = new Set(['idle', 'loading', 'success', 'warning', 'error'])
+      const VALID_SOURCES = new Set(['phone', 'extension'])
+      const LABEL_MAX = 256
+      const kind = typeof payload.kind === 'string' ? payload.kind : ''
+      const source = typeof payload.source === 'string' ? payload.source : ''
+      if (!VALID_KINDS.has(kind)) {
+        sendEncrypted(res, 400, JSON.stringify({ error: `kind must be one of ${[...VALID_KINDS].join(', ')}` }))
+        return
+      }
+      if (!VALID_SOURCES.has(source)) {
+        sendEncrypted(res, 400, JSON.stringify({ error: `source must be one of ${[...VALID_SOURCES].join(', ')}` }))
+        return
+      }
+      const label = typeof payload.label === 'string' ? payload.label.slice(0, LABEL_MAX) : undefined
+      const message = typeof payload.message === 'string' ? payload.message.slice(0, LABEL_MAX) : undefined
+      const delivered = broadcast({
+        type: 'ingest-progress',
+        kind,
+        source,
+        label,
+        message,
+        receivedAt: Date.now(),
+      })
+      sendEncrypted(res, 200, JSON.stringify({ ok: true, delivered }))
+      return
+    }
+
     // ── Notes endpoints ──────────────────────────────────────────────────
     // Phone-managed user notes (file ingests, URL summaries, voice asks,
     // etc.). Stored as JSON files at <notesDir>/<id>.json. Phone is schema

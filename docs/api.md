@@ -388,6 +388,52 @@ Side effect: WS broadcast to every connected client:
 `preferLocalLlm` is only present in the WS event when the caller explicitly
 set it to `true`. Clients should treat absence as `false`.
 
+## `POST /broadcast-status`
+
+Cross-client ingest-status relay. Used by clients that run their own
+ingest pipeline (browser extension as of 0.6.0) to surface "I'm working
+on it / done / errored" to other clients without participating in the
+data path itself. Phone subscribes to the resulting WS event and drives
+its `IngestStatus` slot.
+
+**Request (decrypted)**:
+
+```json
+{
+  "kind": "loading",
+  "source": "extension",
+  "label": "example.com — Article title",
+  "message": "Sent · 0 phones"
+}
+```
+
+- `kind` (required): one of `idle`, `loading`, `success`, `warning`, `error`.
+- `source` (required): one of `phone`, `extension`.
+- `label` (optional, ≤256 chars): short identifier of what's being worked on.
+- `message` (optional, ≤256 chars): outcome text for `success` / `warning` / `error`.
+
+Out-of-shape inputs (bad enum, bad type) land **400** rather than relaying
+garbage. Length excess on `label` / `message` is silently truncated.
+
+**Response 200 (decrypted)**: `{ "ok": true, "delivered": 1 }`
+
+Side effect: WS broadcast to every connected client:
+
+```json
+{
+  "type": "ingest-progress",
+  "kind": "loading",
+  "source": "extension",
+  "label": "example.com — Article title",
+  "receivedAt": 1714000000000
+}
+```
+
+Fire-and-forget. The endpoint does not coordinate ordering or
+deduplicate — clients should be tolerant of a `success` arriving before
+the corresponding `loading` (rare but possible under packet reordering
+on weak networks).
+
 ## `POST /llm/ping`
 
 Fast liveness probe for the local LLM. Clients (the phone app) use this
@@ -461,6 +507,7 @@ All events are encrypted envelopes. Payloads:
 | `note-added` | `{type, id, title}` | `POST /notes/upsert` creates a new note |
 | `note-updated` | `{type, id, title}` | `POST /notes/upsert` overwrites existing |
 | `note-removed` | `{type, id}` | `POST /notes/delete` succeeds |
+| `ingest-progress` | `{type, kind, source, label?, message?, receivedAt}` | `POST /broadcast-status` succeeds |
 
 Clients filter by `type` and dispatch. Note: the phone client (`even/`)
 intentionally does not act on `note-*` events — the phone is the source
@@ -498,6 +545,14 @@ re-probe `/health` after a short delay.
 ---
 
 ## Changelog
+
+### 0.7.3 — `POST /broadcast-status` for cross-client ingest progress
+
+New endpoint and WS event. Lets clients that run their own ingest
+pipeline (browser extension 0.6.0+) surface progress to other clients
+without participating in the data path. Validated enum on `kind` and
+`source`; 256-char cap on `label` and `message`. Wire-additive — older
+clients ignore the new event type.
 
 ### 0.7.2 — `[notes] upsert rejected` logging
 
