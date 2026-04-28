@@ -507,7 +507,8 @@ All events are encrypted envelopes. Payloads:
 | `note-added` | `{type, id, title}` | `POST /notes/upsert` creates a new note |
 | `note-updated` | `{type, id, title}` | `POST /notes/upsert` overwrites existing |
 | `note-removed` | `{type, id}` | `POST /notes/delete` succeeds |
-| `ingest-progress` | `{type, kind, source, label?, message?, receivedAt}` | `POST /broadcast-status` succeeds |
+| `ingest-progress` | `{type, kind, source, label?, message?, receivedAt}` | `POST /broadcast-status` with `kind` ∈ `idle`/`loading`/`success`/`warning`/`error` |
+| `server-status` | `{type, kind, source, label?, receivedAt}` | `POST /broadcast-status` with `kind: 'server-updating'` (auto-updater pre-shutdown signal) |
 
 Clients filter by `type` and dispatch. Note: the phone client (`even/`)
 intentionally does not act on `note-*` events — the phone is the source
@@ -545,6 +546,25 @@ re-probe `/health` after a short delay.
 ---
 
 ## Changelog
+
+### 0.7.4 — `server-updating` pre-signal + `server-status` WS event
+
+`POST /broadcast-status` now accepts `kind: 'server-updating'` with
+`source: 'server'`. When that combination arrives, the server
+broadcasts a different WS event type — `server-status` instead of
+`ingest-progress` — so phones can drive a different UI surface
+(server-update banner vs in-flight ingest hero).
+
+Used by the auto-updater script: right before it kills the running
+server for a `git reset --hard` cycle, it POSTs to its own
+`/broadcast-status` with `{ kind: 'server-updating', source: 'server',
+label: '<from-sha> → <to-sha>' }`. Connected phones receive the
+event and show their "Server Updating…" banner immediately rather
+than inferring it from the eventual WS disconnect.
+
+Best-effort. The updater script silently skips the pre-signal if
+curl/node/key-file is unavailable. Phone falls back to its WS
+disconnect heuristic in that case (covered by phone 0.17.0).
 
 ### 0.7.3 — `POST /broadcast-status` for cross-client ingest progress
 

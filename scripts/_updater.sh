@@ -294,6 +294,59 @@ log "update ${local_sha:0:7} → ${remote_sha:0:7}"
 # reinstall deps. After `git reset --hard` the diff is empty.
 changed=$(git diff --name-only "$local_sha" "$remote_sha")
 
+# Pre-shutdown signal: tell still-connected clients that we're about to
+# restart, BEFORE we kill the running server. The phone reads this from
+# the WS broadcast and shows its update banner immediately, instead of
+# inferring it from the eventual WS disconnect (which arrives a beat
+# later). Best-effort — if /broadcast-status fails (server already
+# unhealthy, network blip), we proceed with the update anyway and the
+# phone falls back to its WS-disconnect heuristic.
+announce_update() {
+  local from="$1"
+  local to="$2"
+  local port
+  port=$(server_port)
+  local key_file="${REPO_DIR}/.nutshell-api-key"
+  if [ ! -f "$key_file" ]; then
+    log "announce_update: no key file — skipping pre-signal"
+    return 0
+  fi
+  if ! command -v curl >/dev/null 2>&1; then
+    log "announce_update: curl unavailable — skipping pre-signal"
+    return 0
+  fi
+  if ! command -v node >/dev/null 2>&1; then
+    log "announce_update: node unavailable — skipping pre-signal"
+    return 0
+  fi
+  # Encrypt {kind:'updating', source:'phone', label:'<from>→<to>'} via
+  # node's lib/crypto. The CLI shape: stdin = plaintext JSON, env
+  # NUTSHELL_KEY = PSK, stdout = JSON envelope. We construct that
+  # inline here — the encryption logic is small and we don't want to
+  # ship a separate helper script. NB: source:'phone' is an
+  # intentional placeholder; the broadcast-status validator only
+  # accepts 'phone' or 'extension', and 'phone' is the closest fit
+  # for "the server itself is announcing" until we widen the enum.
+  local key
+  key=$(cat "$key_file" 2>/dev/null)
+  [ -z "$key" ] && return 0
+  local plaintext
+  plaintext=$(printf '{"kind":"server-updating","source":"server","label":"%s → %s"}' "$from" "$to")
+  local envelope
+  envelope=$(NUTSHELL_KEY="$key" NUTSHELL_PLAIN="$plaintext" node -e '
+    const { encrypt } = require(process.env.NUTSHELL_REPO + "/lib/crypto");
+    process.stdout.write(JSON.stringify(encrypt(process.env.NUTSHELL_PLAIN, process.env.NUTSHELL_KEY)));
+  ' 2>/dev/null) || return 0
+  [ -z "$envelope" ] && return 0
+  curl -fsS --max-time 3 \
+    -H "Content-Type: application/json" \
+    -X POST \
+    -d "$envelope" \
+    "http://localhost:${port}/broadcast-status" >/dev/null 2>&1 || true
+  log "announced pre-update to clients on :$port"
+}
+NUTSHELL_REPO="$REPO_DIR" announce_update "${local_sha:0:7}" "${remote_sha:0:7}"
+
 stop_server
 git reset --hard origin/main --quiet
 

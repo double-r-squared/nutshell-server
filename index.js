@@ -730,23 +730,34 @@ function createServer(options = {}) {
         sendJson(res, 401, { error: 'Unauthorized' })
         return
       }
-      const VALID_KINDS = new Set(['idle', 'loading', 'success', 'warning', 'error'])
-      const VALID_SOURCES = new Set(['phone', 'extension'])
+      // `server-updating` is the pre-shutdown signal the auto-updater
+      // sends right before it kills the running server. Other kinds are
+      // ingest-progress relays (extension → phone). They route to
+      // different WS event types so the phone can drive different UI
+      // (server-updating overlay vs in-flight ingest hero).
+      const INGEST_KINDS = new Set(['idle', 'loading', 'success', 'warning', 'error'])
+      const SERVER_KINDS = new Set(['server-updating'])
+      const VALID_SOURCES = new Set(['phone', 'extension', 'server'])
       const LABEL_MAX = 256
       const kind = typeof payload.kind === 'string' ? payload.kind : ''
       const source = typeof payload.source === 'string' ? payload.source : ''
-      if (!VALID_KINDS.has(kind)) {
-        sendEncrypted(res, 400, JSON.stringify({ error: `kind must be one of ${[...VALID_KINDS].join(', ')}` }))
+      if (!INGEST_KINDS.has(kind) && !SERVER_KINDS.has(kind)) {
+        sendEncrypted(res, 400, JSON.stringify({
+          error: `kind must be one of ${[...INGEST_KINDS, ...SERVER_KINDS].join(', ')}`,
+        }))
         return
       }
       if (!VALID_SOURCES.has(source)) {
-        sendEncrypted(res, 400, JSON.stringify({ error: `source must be one of ${[...VALID_SOURCES].join(', ')}` }))
+        sendEncrypted(res, 400, JSON.stringify({
+          error: `source must be one of ${[...VALID_SOURCES].join(', ')}`,
+        }))
         return
       }
       const label = typeof payload.label === 'string' ? payload.label.slice(0, LABEL_MAX) : undefined
       const message = typeof payload.message === 'string' ? payload.message.slice(0, LABEL_MAX) : undefined
+      const eventType = SERVER_KINDS.has(kind) ? 'server-status' : 'ingest-progress'
       const delivered = broadcast({
-        type: 'ingest-progress',
+        type: eventType,
         kind,
         source,
         label,
