@@ -83,6 +83,57 @@ stop_server() {
   rm -f "$PID_FILE"
 }
 
+# Detect the configured server port from LAUNCH_ARGS, defaulting to 4242
+# when no `--port N` is present. Used by free_port_if_ours below.
+server_port() {
+  local i
+  for ((i = 0; i < ${#LAUNCH_ARGS[@]}; i++)); do
+    if [ "${LAUNCH_ARGS[$i]}" = "--port" ] && [ -n "${LAUNCH_ARGS[$((i + 1))]:-}" ]; then
+      echo "${LAUNCH_ARGS[$((i + 1))]}"
+      return
+    fi
+  done
+  echo 4242
+}
+
+# If the configured port is currently bound, identify the holder. Only
+# kills if the cmdline matches our own server (bin/cli.js,
+# nutshell-server, or start-with-llm). If a stranger holds the port,
+# log loudly and skip the spawn — never randomly nuke an unrelated
+# service. Catches the "manual server still running" and "lost PID
+# file" cases that otherwise produce EADDRINUSE every cycle.
+free_port_if_ours() {
+  local port="$1"
+  local pid=""
+  if command -v lsof >/dev/null 2>&1; then
+    pid=$(lsof -tiTCP:"$port" -sTCP:LISTEN 2>/dev/null | head -1)
+  elif command -v fuser >/dev/null 2>&1; then
+    pid=$(fuser "$port"/tcp 2>/dev/null | tr -d ' ' | head -1)
+  fi
+  [ -z "$pid" ] && return 0
+  local cmdline=""
+  cmdline=$(tr '\0' ' ' </proc/"$pid"/cmdline 2>/dev/null || true)
+  if echo "$cmdline" | grep -qE 'bin/cli\.js|nutshell-server|start-with-llm'; then
+    log "port $port held by stale nutshell pid=$pid; killing"
+    kill "$pid" 2>/dev/null || true
+    local _i
+    for _i in $(seq 1 10); do
+      if command -v lsof >/dev/null 2>&1; then
+        if ! lsof -tiTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1; then return 0; fi
+      else
+        break
+      fi
+      sleep 0.5
+    done
+    log "WARN: stale pid=$pid did not release $port; sending SIGKILL"
+    kill -KILL "$pid" 2>/dev/null || true
+    sleep 1
+    return 0
+  fi
+  log "WARN: port $port held by non-nutshell pid=$pid (cmdline: $cmdline); skipping spawn"
+  return 1
+}
+
 # Spawns start-with-llm.sh detached. The script exec-replaces itself with
 # `node bin/cli.js`, so $! is the eventual node PID — kill works on it.
 start_server() {
@@ -90,6 +141,10 @@ start_server() {
   local launcher="${REPO_DIR}/scripts/start-with-llm.sh"
   if [ ! -x "$launcher" ]; then
     log "ERROR: launcher not found or not executable: $launcher"
+    return 1
+  fi
+  # Free the port if a stale Nutshell process is holding it.
+  if ! free_port_if_ours "$(server_port)"; then
     return 1
   fi
   # nohup + & so the server outlives this updater process. Logs go to
