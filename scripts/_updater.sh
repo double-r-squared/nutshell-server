@@ -144,6 +144,21 @@ if [ "$local_sha" = "$remote_sha" ]; then
   exit 0
 fi
 
+# Auto-overridden tracked files: anything in this list gets reset to HEAD
+# before the dirty-tree check. These are repo-source-of-truth files that
+# we want to refresh on every server push regardless of local edits —
+# accidental writes should not block updates. notes/item-welcome.json is
+# the demo welcome note; if a user edits it via the phone or by hand,
+# the next push wins.
+AUTO_OVERRIDE=(
+  notes/item-welcome.json
+)
+for path in "${AUTO_OVERRIDE[@]}"; do
+  # Only attempt the checkout if git tracks the file in current HEAD.
+  # Quiet-fails when the file isn't tracked, untouched, or non-existent.
+  git checkout -- "$path" 2>/dev/null || true
+done
+
 # There ARE new commits. Refuse if the working tree is dirty so we don't
 # clobber accidental local edits.
 if [ -n "$(git status --porcelain)" ]; then
