@@ -46,20 +46,61 @@ NUTSHELL_HOME="${NUTSHELL_HOME:-$HOME/.nutshell}"
 PID_FILE="$NUTSHELL_HOME/server.pid"
 SERVER_LOG="$NUTSHELL_HOME/server.log"
 UPDATER_LOG="$NUTSHELL_HOME/updater.log"
+LOCK_FILE="$NUTSHELL_HOME/updater.lock"
 SERVER_LOG_MAX_BYTES=$((10 * 1024 * 1024))
 
 log() {
   printf '%s [updater] %s\n' "$(date '+%Y-%m-%dT%H:%M:%S')" "$*" >>"$UPDATER_LOG"
 }
 
+# Single-instance guard. Two cycles racing — install-updater's first
+# cycle plus the systemd timer firing in the same second, e.g. — caused
+# kill+respawn churn because they'd both read a stale PID file, both
+# spawn, the loser would EADDRINUSE, and the survivor's PID file would
+# get clobbered by the loser's cleanup. flock with a non-blocking lock
+# means at most one cycle runs at a time. Subsequent firings exit
+# silently rather than queueing up.
+exec 200>"$LOCK_FILE"
+if ! flock -n 200; then
+  exit 0
+fi
+
 # ── Server lifecycle ────────────────────────────────────────────────────────
 
-# Returns 0 if the PID file exists and the recorded PID is alive.
+# Returns 0 if the server is running. Two checks, in order:
+#
+#   1. PID file points to a live process.
+#   2. The configured port is bound by a process whose cmdline matches
+#      our launcher (bin/cli.js, nutshell-server, start-with-llm).
+#
+# The second check exists so a stale-or-missing PID file (the race we
+# just fixed wrote one of these often enough) doesn't trick us into
+# thinking the server is dead and spawning a duplicate. When (1) fails
+# but (2) succeeds, we heal the PID file to the discovered pid so future
+# stop_server calls work.
 is_running() {
-  [ -f "$PID_FILE" ] || return 1
-  local pid
-  pid=$(cat "$PID_FILE" 2>/dev/null || echo '')
-  [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null
+  if [ -f "$PID_FILE" ]; then
+    local pid
+    pid=$(cat "$PID_FILE" 2>/dev/null || echo '')
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+      return 0
+    fi
+  fi
+  # Fall back to port lookup. Defined later in the file (server_port,
+  # find_nutshell_pid_on_port). Tolerates missing helpers — return
+  # false rather than erroring out — so this works even on the first
+  # cycle before everything's set up.
+  if ! command -v server_port >/dev/null 2>&1; then return 1; fi
+  local port
+  port=$(server_port)
+  local found
+  found=$(find_nutshell_pid_on_port "$port")
+  if [ -n "$found" ]; then
+    log "is_running: pid file out of sync; healing to running pid=$found"
+    echo "$found" >"$PID_FILE"
+    return 0
+  fi
+  return 1
 }
 
 # SIGTERM, wait up to 5 s, then SIGKILL. Removes the PID file regardless.
@@ -96,6 +137,34 @@ server_port() {
   echo 4242
 }
 
+# Find the pid of any process listening on `port`, or empty if none.
+# Tolerates missing tools (lsof, fuser) — returns empty rather than
+# erroring out. Used by both is_running (heal-from-port) and
+# free_port_if_ours (kill stale).
+pid_on_port() {
+  local port="$1"
+  if command -v lsof >/dev/null 2>&1; then
+    lsof -tiTCP:"$port" -sTCP:LISTEN 2>/dev/null | head -1
+  elif command -v fuser >/dev/null 2>&1; then
+    fuser "$port"/tcp 2>/dev/null | tr -d ' ' | head -1
+  fi
+}
+
+# Returns the pid on `port` ONLY if its cmdline looks like a Nutshell
+# server. Empty otherwise. Used by is_running (don't claim a stranger
+# is "us").
+find_nutshell_pid_on_port() {
+  local port="$1"
+  local pid
+  pid=$(pid_on_port "$port")
+  [ -z "$pid" ] && return 0
+  local cmdline=""
+  cmdline=$(tr '\0' ' ' </proc/"$pid"/cmdline 2>/dev/null || true)
+  if echo "$cmdline" | grep -qE 'bin/cli\.js|nutshell-server|start-with-llm'; then
+    echo "$pid"
+  fi
+}
+
 # If the configured port is currently bound, identify the holder. Only
 # kills if the cmdline matches our own server (bin/cli.js,
 # nutshell-server, or start-with-llm). If a stranger holds the port,
@@ -104,12 +173,8 @@ server_port() {
 # file" cases that otherwise produce EADDRINUSE every cycle.
 free_port_if_ours() {
   local port="$1"
-  local pid=""
-  if command -v lsof >/dev/null 2>&1; then
-    pid=$(lsof -tiTCP:"$port" -sTCP:LISTEN 2>/dev/null | head -1)
-  elif command -v fuser >/dev/null 2>&1; then
-    pid=$(fuser "$port"/tcp 2>/dev/null | tr -d ' ' | head -1)
-  fi
+  local pid
+  pid=$(pid_on_port "$port")
   [ -z "$pid" ] && return 0
   local cmdline=""
   cmdline=$(tr '\0' ' ' </proc/"$pid"/cmdline 2>/dev/null || true)
