@@ -904,6 +904,88 @@ function createServer(options = {}) {
 
   // ── WebSocket ─────────────────────────────────────────────────────────────
 
+  // /chat/keys — per-connection keystroke echo loop. Phone sends
+  // frames of the form {type: 'keystroke', sessionId, text}; server
+  // replies with {type: 'displayed', sessionId, text}. v1 does no
+  // server-side processing — the round-trip exists so the round-trip
+  // is itself observable in the UI before any LLM logic is wired.
+  // Same hello-auth handshake as /events; no broadcast (each client
+  // sees only its own echoes).
+  function handleChatKeysConnection(ws, req) {
+    let authenticated = false
+    const addr = req ? clientAddr(req) : 'unknown'
+    console.log(`[ws:chat] connection opened from ${addr}`)
+    const timeout = setTimeout(() => {
+      if (!authenticated) {
+        console.warn(`[ws:chat] hello timeout from ${addr}`)
+        try { ws.close(4401, 'hello timeout') } catch {}
+      }
+    }, WS_HELLO_TIMEOUT_MS)
+
+    ws.on('message', (raw) => {
+      let envelope
+      try { envelope = JSON.parse(raw.toString('utf8')) }
+      catch {
+        console.warn(`[ws:chat] malformed envelope from ${addr}`)
+        ws.close(4400, 'malformed'); return
+      }
+      let plain
+      try { plain = decrypt(envelope, API_KEY) }
+      catch {
+        console.warn(`[ws:chat] auth rejected from ${addr} — key mismatch`)
+        ws.close(4401, 'unauthorized'); return
+      }
+      let msg
+      try { msg = JSON.parse(plain) }
+      catch {
+        console.warn(`[ws:chat] malformed plaintext from ${addr}`)
+        ws.close(4400, 'malformed'); return
+      }
+
+      if (!authenticated) {
+        if (msg && msg.type === 'hello') {
+          authenticated = true
+          clearTimeout(timeout)
+          console.log(`[ws:chat] authenticated ${addr}`)
+          try {
+            ws.send(JSON.stringify(encrypt(JSON.stringify({ type: 'welcome' }), API_KEY)))
+          } catch {}
+          return
+        }
+        console.warn(`[ws:chat] expected hello from ${addr}, got ${msg?.type}`)
+        ws.close(4400, 'expected hello')
+        return
+      }
+
+      if (msg && msg.type === 'keystroke') {
+        const sessionId = typeof msg.sessionId === 'string' ? msg.sessionId : ''
+        const text = typeof msg.text === 'string' ? msg.text : ''
+        try {
+          ws.send(
+            JSON.stringify(
+              encrypt(
+                JSON.stringify({ type: 'displayed', sessionId, text }),
+                API_KEY,
+              ),
+            ),
+          )
+        } catch {}
+        return
+      }
+      // Unknown frame types are ignored — keeps the wire forward-
+      // compatible when the phone introduces commit/cancel/etc.
+    })
+
+    ws.on('close', () => {
+      clearTimeout(timeout)
+      if (authenticated) console.log(`[ws:chat] closed from ${addr}`)
+    })
+    ws.on('error', (err) => {
+      clearTimeout(timeout)
+      console.warn(`[ws:chat] error from ${addr}: ${err.message}`)
+    })
+  }
+
   function handleConnection(ws, req) {
     let authenticated = false
     const addr = req ? clientAddr(req) : 'unknown'
@@ -993,15 +1075,30 @@ function createServer(options = {}) {
 
     httpServer = http.createServer(handleRequest)
     wss = new WebSocketServer({ noServer: true })
-    wss.on('connection', (ws, req) => handleConnection(ws, req))
+    // Two upgrade paths share one WS server. We tag the request with
+    // the resolved path so the connection handler can route to the
+    // right per-path logic without re-parsing the URL.
+    wss.on('connection', (ws, req) => {
+      if (req && req.__nutshellPath === '/chat/keys') {
+        handleChatKeysConnection(ws, req)
+      } else {
+        handleConnection(ws, req)
+      }
+    })
 
     httpServer.on('upgrade', (req, socket, head) => {
       const u = new URL(req.url, 'http://localhost')
-      if (u.pathname !== '/events') {
-        socket.destroy()
+      if (u.pathname === '/events') {
+        req.__nutshellPath = '/events'
+        wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req))
         return
       }
-      wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req))
+      if (u.pathname === '/chat/keys') {
+        req.__nutshellPath = '/chat/keys'
+        wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req))
+        return
+      }
+      socket.destroy()
     })
 
     // Legacy: if the user passed --docs, register a default project so one-off
