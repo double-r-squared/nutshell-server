@@ -131,6 +131,7 @@ All encrypted except `/health`. Full reference: [`docs/api.md`](docs/api.md).
 | `POST /llm/ping` | Fast liveness probe for the local LLM (~800 ms timeout) |
 | `POST /llm` | OpenAI-compatible chat completions passthrough to Ollama (only when `--ollama`) |
 | `WS /events` | Event stream — file events, project events, URL events, note events |
+| `WS /chat/keys` | Per-connection keystroke echo for the phone's chat tab. Same hello-auth handshake as `/events`. After auth, phone sends `{type: 'keystroke', sessionId, text}` and server replies with `{type: 'displayed', sessionId, text}`. No broadcast — each client sees only its own echoes. v1 is just a round-trip; v2 will land the LLM hop. |
 
 ### WebSocket lifecycle
 
@@ -172,12 +173,36 @@ To run with a legacy single-tenant default project, invoke the CLI directly:
 ### Auto-updater (deploy machines)
 
 For machines that exist solely to host the server, `scripts/install-updater.sh`
-sets up a 60-second polling loop that does `git fetch && git reset --hard
-origin/main` and restarts via `start-with-llm.sh` whenever new commits land.
+sets up a 60-second polling loop that does `git fetch` + `git reset --hard`
+on the **currently checked-out branch** (read via
+`git symbolic-ref --short HEAD`), and restarts via `start-with-llm.sh`
+whenever new commits land. Branch convention across the workspace:
+
+- `release` — production line. Cut at `d53ca1e` (pre-chat). Deploy boxes
+  should be on this branch.
+- `main` — active dev. Includes whatever's currently in flight (chat tab,
+  etc.). Use on dev boxes only.
+
+Switching a deploy from production to dev (or back) is `git checkout
+<branch>` on the box; the next updater cycle picks it up. Detached HEAD
+bails with a clear log line — the updater refuses to update without an
+upstream.
+
 State lives at `~/.nutshell/` — outside the repo on purpose, since
 `git reset --hard` would wipe anything inside it. Never move runtime state
 (notes, keys, PID files) into the repo. See [`docs/auto-update.md`](docs/auto-update.md)
 for the full story.
+
+#### Backport policy (release branch)
+
+Only **security fixes**, **data-corruption fixes**, and **build-broken
+fixes** cherry-pick from `main` to `release`. New features and UI tweaks
+stay on `main` until promoted (a future commit explicitly merging
+`main` into `release` once chat is "ready" — TBD).
+
+When cherry-picking, bump the version along the release line (e.g.
+`0.7.4 → 0.7.5`), not the main-line version, so the two branches never
+collide on what version any given commit shipped under.
 
 ---
 
