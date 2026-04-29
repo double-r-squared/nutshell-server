@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# Nutshell auto-updater — pulls the latest origin/main, restarts the server.
+# Nutshell auto-updater — pulls the latest commit from whichever branch
+# is currently checked out (release for production, main for dev),
+# then restarts the server.
 #
 # This file is the *template* — `install-updater.sh` copies it to
 # `~/.nutshell/updater.sh` and the live copy is what actually runs (via
@@ -10,13 +12,14 @@
 # the updater itself.
 #
 # Behaviour per cycle:
-#   1. git fetch origin main; if no new commits AND the server is running,
-#      exit silently (no log noise on idle cycles).
+#   1. git fetch origin <tracked-branch>; if no new commits AND the
+#      server is running, exit silently (no log noise on idle cycles).
+#      <tracked-branch> = whatever HEAD is currently on (release / main).
 #   2. If the server is not running but we're up to date, start it.
 #      Recovers from manual kills, reboots, post-reinstall first run.
 #   3. If there are new commits AND the working tree is clean: stop the
-#      server, hard-reset to origin/main, npm install if package-lock
-#      changed, relaunch.
+#      server, hard-reset to origin/<tracked-branch>, npm install if
+#      package-lock changed, relaunch.
 #   4. If there are new commits but the working tree is DIRTY: log a
 #      warning and skip. The deploy machine should never have local edits;
 #      this guard catches "I sshed in to debug" mistakes and stops them
@@ -252,15 +255,26 @@ cd "$REPO_DIR" || {
   exit 1
 }
 
+# Track the currently checked-out branch — `release` for production
+# deploys, `main` for dev installs. Self-configuring: switching branches
+# in the repo (git checkout release / main) is the entire UX for
+# changing what the updater follows. Detached HEAD has no upstream;
+# refuse to update in that state.
+TRACKED_BRANCH=$(git symbolic-ref --short HEAD 2>/dev/null || echo '')
+if [ -z "$TRACKED_BRANCH" ]; then
+  log "detached HEAD; auto-update disabled until a branch is checked out"
+  exit 0
+fi
+
 # Network or auth failure here is normal (laptop closed, wifi off). Don't
 # treat it as fatal — try again in 60 s.
-if ! git fetch origin main --quiet 2>/dev/null; then
-  log "git fetch failed; will retry next cycle"
+if ! git fetch origin "$TRACKED_BRANCH" --quiet 2>/dev/null; then
+  log "git fetch failed for branch $TRACKED_BRANCH; will retry next cycle"
   exit 0
 fi
 
 local_sha=$(git rev-parse HEAD)
-remote_sha=$(git rev-parse origin/main)
+remote_sha=$(git rev-parse "origin/$TRACKED_BRANCH")
 
 if [ "$local_sha" = "$remote_sha" ]; then
   # Up to date. Only act if the server died and needs reviving.
@@ -355,7 +369,7 @@ announce_update() {
 NUTSHELL_REPO="$REPO_DIR" announce_update "${local_sha:0:7}" "${remote_sha:0:7}"
 
 stop_server
-git reset --hard origin/main --quiet
+git reset --hard "origin/$TRACKED_BRANCH" --quiet
 
 if echo "$changed" | grep -qx 'package-lock.json'; then
   log "package-lock.json changed; running npm install --omit=dev"
