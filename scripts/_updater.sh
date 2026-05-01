@@ -271,9 +271,21 @@ if [ -z "$TRACKED_BRANCH" ]; then
 fi
 
 # Network or auth failure here is normal (laptop closed, wifi off). Don't
-# treat it as fatal — try again in 60 s.
+# treat it as fatal — try again in 60 s. Before giving up though, check
+# whether the locally-checked-out branch even exists on origin —
+# common foot-gun: deploy host stuck on `master` while the repo tracks
+# `main` / `release` upstream. The catch-all "fetch failed" message
+# was too vague to diagnose without SSH'ing in.
 if ! git fetch origin "$TRACKED_BRANCH" --quiet 2>/dev/null; then
-  log "git fetch failed for branch $TRACKED_BRANCH; will retry next cycle"
+  remote_has_branch=""
+  if git ls-remote --heads --exit-code origin "$TRACKED_BRANCH" >/dev/null 2>&1; then
+    remote_has_branch="yes"
+  fi
+  if [ -z "$remote_has_branch" ]; then
+    log "ERROR: local branch '$TRACKED_BRANCH' does not exist on origin. Run 'git checkout main' (or 'release') in $REPO_DIR; the next cycle will follow that branch."
+  else
+    log "git fetch failed for branch $TRACKED_BRANCH; will retry next cycle"
+  fi
   exit 0
 fi
 
