@@ -14,6 +14,7 @@ const notesStore = require('./lib/notes')
 const {
   probeOllama,
   proxyChatCompletion,
+  streamChatCompletion,
   DEFAULT_URL: OLLAMA_DEFAULT_URL,
   DEFAULT_MODEL: OLLAMA_DEFAULT_MODEL,
   LIVE_PROBE_TIMEOUT_MS,
@@ -970,6 +971,57 @@ function createServer(options = {}) {
             ),
           )
         } catch {}
+        return
+      }
+
+      // {type:'prompt', sessionId, turnId, body} → stream tokens back
+      // as {type:'token', sessionId, turnId, delta} frames, terminating
+      // in {type:'done', sessionId, turnId} or
+      // {type:'error', sessionId, turnId, error}. body is the same
+      // OpenAI/OpenRouter-shaped object the HTTP /llm endpoint takes.
+      if (msg && msg.type === 'prompt') {
+        const sessionId = typeof msg.sessionId === 'string' ? msg.sessionId : ''
+        const turnId = typeof msg.turnId === 'string' ? msg.turnId : ''
+        const body = msg.body && typeof msg.body === 'object' ? msg.body : null
+        const sendFrame = (frame) => {
+          try {
+            ws.send(JSON.stringify(encrypt(JSON.stringify(frame), API_KEY)))
+          } catch {}
+        }
+        if (!sessionId || !turnId || !body) {
+          sendFrame({ type: 'error', sessionId, turnId, error: 'invalid prompt frame' })
+          return
+        }
+        if (!llmReady) {
+          sendFrame({
+            type: 'error', sessionId, turnId,
+            error: llmProbeError || 'LLM not enabled on this server',
+          })
+          return
+        }
+        const reqId = Math.random().toString(36).slice(2, 8)
+        const startedAt = Date.now()
+        const msgCount = Array.isArray(body.messages) ? body.messages.length : 0
+        console.log(
+          `[ws:chat ${reqId}] prompt from ${addr} — ${msgCount} message${msgCount !== 1 ? 's' : ''}, model ${ollama.model}`,
+        )
+        let tokenCount = 0
+        streamChatCompletion(ollama, body, (delta) => {
+          tokenCount += 1
+          sendFrame({ type: 'token', sessionId, turnId, delta })
+        })
+          .then((full) => {
+            const ms = Date.now() - startedAt
+            console.log(
+              `[ws:chat ${reqId}] complete in ${formatDuration(ms)} · ${tokenCount} chunks · ${full.length} chars`,
+            )
+            sendFrame({ type: 'done', sessionId, turnId })
+          })
+          .catch((err) => {
+            const message = err?.message || String(err)
+            console.warn(`[ws:chat ${reqId}] failed: ${message}`)
+            sendFrame({ type: 'error', sessionId, turnId, error: message })
+          })
         return
       }
       // Unknown frame types are ignored — keeps the wire forward-
