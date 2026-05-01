@@ -61,11 +61,20 @@ Ports: default `4242`, override with `--port` or `NUTSHELL_PORT`. See
 │   ├── files.js           # scanFiles (recursive .md), readFile (traversal-guarded)
 │   ├── watcher.js         # chokidar.watch wrapper per project
 │   ├── llm.js             # Ollama probe + /v1/chat/completions passthrough
-│   └── notes.js           # JSON notes store at <cwd>/notes/<id>.json
+│   └── notes.js           # JSON notes store + ensureSeeded (legacy
+│                           #   migration + welcome-template refresh)
 │
 ├── prompts/
 │   ├── reformat-note.txt          # G2 reformat spec (used by VS Code transform)
 │   └── reformat-note-compact.txt  # Shorter variant
+│
+├── templates/
+│   └── welcome-note.json  # Server-owned welcome note. Refreshed into
+│                          #   notesDir on every server start so each
+│                          #   release can drop "what's new" content
+│                          #   here. User edits revert; user deletes
+│                          #   return on next start. Treat as the
+│                          #   release-notes channel, not user content.
 │
 ├── scripts/
 │   └── start-with-llm.sh  # Ollama setup + `node cli.js --no-docs --ollama ...`
@@ -98,13 +107,33 @@ a UUID v4 and stores it in `.vscode/nutshell-project-id`. The server uses
 ### Notes store
 
 Separate from projects. Stores user-authored notes from the phone (file
-ingests, URL summaries, voice asks) as JSON files at `<cwd>/notes/<id>.json`
-(default; `notesDir` option overrides). One file per note, no database.
+ingests, URL summaries, voice asks) as JSON files, one file per note, no
+database.
+
+**Default location: `${NUTSHELL_HOME:-$HOME/.nutshell}/notes`** —
+*outside* the repo so a `git reset --hard` / `git clean -fdx` / re-clone
+of the daemon code can never touch user data. Override priority: the
+`--notes-dir` CLI flag wins, otherwise `NOTES_DIR` env var, otherwise
+the default. (Older builds — pre-0.10.0 — defaulted to `<cwd>/notes`,
+i.e. inside the repo. `ensureSeeded` migrates those files on first
+start of the new build.)
 
 The phone is the schema authority — this server round-trips opaque `Item`
 objects keyed by `id`. We validate only that `id` matches
 `/^[A-Za-z0-9._-]{1,128}$/` so writes can't escape `notesDir`. See
 [`lib/notes.js`](lib/notes.js) for the on-disk layer.
+
+**Bootstrap (`ensureSeeded`).** Runs every server start.
+
+1. If a `.seeded` marker file is missing in `notesDir`, copy any
+   `*.json` from the legacy in-repo path (`<repo>/notes/`) into
+   `notesDir`, then write the marker. Idempotent — second run finds
+   the marker and skips.
+2. *Always* overwrite `notesDir/<welcome-id>.json` from
+   `templates/welcome-note.json`. The welcome is server-owned and
+   updated on every restart — releases use it as a "what's new"
+   channel. User edits to it revert on next start; user deletes
+   return; that's intentional.
 
 Notes survive server restarts. They survive the phone's webview being wiped
 (which is the whole reason this exists — see the phone's

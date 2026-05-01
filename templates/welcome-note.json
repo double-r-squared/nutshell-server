@@ -5,8 +5,12 @@
   "createdAt": 1777076691699,
   "sections": [
     {
+      "heading": "What's new in v0.10.0",
+      "content": "User notes now live outside the server repo at ~/.nutshell/notes — auto-updates can reset the daemon code without ever touching your data. Streaming chat is wired end-to-end: real Ollama / OpenRouter replies stream into the chat-prompt screen via lightweight container upgrades, with a per-session token-rate slider on the phone (dial to zero for an async 'thinking' animation that buffers and lands the full reply at once). Phone now renders the chat history above the textarea, scrolling stays in sync with which prompt the glasses are showing, and the chat-list nav doesn't grow ghost topics mid-stream. Container-name length cap (16 chars) caught us once — fixed and audited. This welcome note is refreshed from the server template on every restart so each release can drop a 'what's new' here. Edits revert; deletes return on next start; treat it as a release-notes channel, not a personal note."
+    },
+    {
       "heading": "What this is",
-      "content": "Nutshell turns anything you capture into a readable HUD view on your G2 glasses. The phone does the heavy lifting and the glasses just display. Delete this note any time you like and it will not come back."
+      "content": "Nutshell turns anything you capture into a readable HUD view on your G2 glasses. The phone does the heavy lifting and the glasses just display."
     },
     {
       "heading": "Capture: URLs",
@@ -22,7 +26,11 @@
     },
     {
       "heading": "Reading on the glasses",
-      "content": "The home screen is a scrollable list of your notes newest first. Scroll to highlight and tap to open. The overview splits the screen with a chapter list on the left and a preview on the right. Tap a chapter to enter the reading view. In reading view scrolling pages the full text and double tap returns to the overview."
+      "content": "The launch surface is the root menu: time on the left, a chat / notes list on the right. Scroll to highlight, tap to enter; double-tap exits the app. From notes, the home screen is your projects + saved notes newest first. From chat, you land on a sessions picker, then a session opens the chat surface."
+    },
+    {
+      "heading": "Chat: streaming, sessions, history",
+      "content": "Pick or create a session on the phone. Type a prompt, hit send. The reply streams live onto the glasses prompt view as well as into the phone's chat history pane. Scroll past the bottom of one prompt to advance into the next; double-tap to walk back up the chain. Token rate is a per-session knob so you can tune how fast the text paints — zero turns it into batch mode."
     },
     {
       "heading": "Ask: voice questions",
@@ -34,15 +42,11 @@
     },
     {
       "heading": "Errors are ephemeral",
-      "content": "If the model is unreachable, your API key is wrong, or your utterance was too short, the QA Bank will show a short ERROR entry telling you what went wrong. These entries are not kept forever. The next time you open Nutshell, all error entries and any Ask that was still in flight when you closed the app are dropped. Pending answers are rare and not important enough to revive, so they are cleared on restart too."
+      "content": "If the model is unreachable, your API key is wrong, or your utterance was too short, the QA Bank will show a short ERROR entry telling you what went wrong. These entries are not kept forever. The next time you open Nutshell, all error entries and any Ask that was still in flight when you closed the app are dropped."
     },
     {
       "heading": "Head gestures: look up and look down",
       "content": "While reading you can look up to open Ask hands free and look down to open the QA Bank for the current note. Both are off by default. Turn them on in Settings and run the one time Calibrate flow so the detector learns which axis is pitch on your head. Gestures only fire while you are reading so they never interrupt other screens."
-    },
-    {
-      "heading": "Pull to refresh",
-      "content": "When you are on the first item of the home list a scroll-up gesture on the temple refreshes the list. New notes coming in from the phone also appear live without a reload."
     },
     {
       "heading": "Notes management",
@@ -50,7 +54,7 @@
     },
     {
       "heading": "Settings and API key",
-      "content": "Open the Settings tab on the phone to paste your OpenRouter API key, toggle head gestures, and run gesture calibration. A live Glasses Status panel shows the bridge state, current screen, current note, current chapter, and the last API call. There is also a debug console for troubleshooting."
+      "content": "Open the Settings tab on the phone to paste your OpenRouter API key, toggle head gestures, run gesture calibration, and tune the glasses layout knobs. A live Glasses Status panel shows the bridge state, current screen, current note, current chapter, and the last API call."
     }
   ],
   "lastActiveAt": 1777076736402

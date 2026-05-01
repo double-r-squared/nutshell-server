@@ -98,14 +98,29 @@ function createServer(options = {}) {
   // Registered projects. Each has its own chokidar watcher.
   const projects = new Map()
 
-  // Notes storage. JSON-on-disk under <cwd>/notes/. The phone is the schema
-  // authority; this server just round-trips opaque objects keyed by id.
-  // Survives restarts; survives the phone's beta repackages (which is the
-  // whole point — notes outlive the webview origin).
+  // Notes storage. Phone is the schema authority; this server just
+  // round-trips opaque objects keyed by id. Default location is
+  // ${NUTSHELL_HOME:-$HOME/.nutshell}/notes — outside the repo so a
+  // git reset / clean / re-clone of the daemon code never touches
+  // user data. Override with --notes-dir or NOTES_DIR env.
+  //
+  // ensureSeeded handles two things at startup:
+  //   1. One-time migration of any legacy <repo>/notes/*.json into
+  //      the new external location (gated by a .seeded marker so
+  //      we don't repeat-migrate after the user has edited).
+  //   2. Always-overwrite of the welcome from
+  //      templates/welcome-note.json — releases use this as a
+  //      "what's new" channel; the welcome is server-owned and
+  //      refreshes on every restart.
+  const defaultNotesDir =
+    process.env.NOTES_DIR ||
+    path.join(process.env.NUTSHELL_HOME || path.join(process.env.HOME || '', '.nutshell'), 'notes')
   const notesDir = options.notesDir
     ? path.resolve(options.notesDir)
-    : path.join(path.dirname(keyFilePath), 'notes')
-  notesStore.ensureDir(notesDir)
+    : defaultNotesDir
+  const legacyNotesDir = path.join(__dirname, 'notes')
+  const welcomeTemplate = path.join(__dirname, 'templates', 'welcome-note.json')
+  notesStore.ensureSeeded(notesDir, legacyNotesDir, welcomeTemplate)
 
   // ── Helpers ───────────────────────────────────────────────────────────────
 

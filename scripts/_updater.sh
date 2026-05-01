@@ -301,20 +301,13 @@ if [ "$local_sha" = "$remote_sha" ]; then
   exit 0
 fi
 
-# Auto-overridden tracked files: anything in this list gets reset to HEAD
-# before the dirty-tree check. These are repo-source-of-truth files that
-# we want to refresh on every server push regardless of local edits —
-# accidental writes should not block updates. notes/item-welcome.json is
-# the demo welcome note; if a user edits it via the phone or by hand,
-# the next push wins.
-AUTO_OVERRIDE=(
-  notes/item-welcome.json
-)
-for path in "${AUTO_OVERRIDE[@]}"; do
-  # Only attempt the checkout if git tracks the file in current HEAD.
-  # Quiet-fails when the file isn't tracked, untouched, or non-existent.
-  git checkout -- "$path" 2>/dev/null || true
-done
+# NB: there used to be an AUTO_OVERRIDE list here that reset
+# notes/item-welcome.json to HEAD before the dirty-tree check.
+# Removed in server 0.10.0 — user notes (and the welcome) now live
+# in ${NUTSHELL_HOME}/notes outside the repo, and the welcome is
+# server-seeded from templates/welcome-note.json on every start. No
+# tracked file in the repo is meant to be runtime-mutable anymore,
+# so the special case is unnecessary.
 
 # There ARE new commits. Auto-stash any dirty working tree so a stray
 # local edit doesn't permanently block updates. We always log what
