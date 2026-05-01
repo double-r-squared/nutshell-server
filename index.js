@@ -915,6 +915,61 @@ function createServer(options = {}) {
       return
     }
 
+    // /logs/peek — fetch the last non-empty line of either the
+    // server log or the updater log. Both live at ${NUTSHELL_HOME}/
+    // (server.log, updater.log) by convention. Diagnostic aid for the
+    // phone's developer card so the user can sanity-check what the
+    // daemon's been doing without SSHing in. Reads only the tail of
+    // the file (~4 KB) so multi-megabyte logs don't load into memory.
+    if (req.method === 'POST' && pathname === '/logs/peek') {
+      let payload
+      try {
+        payload = await decryptBody(req)
+      } catch {
+        sendJson(res, 401, { error: 'Unauthorized' })
+        return
+      }
+      const kind = payload && (payload.kind === 'server' || payload.kind === 'updater')
+        ? payload.kind
+        : null
+      if (!kind) {
+        sendEncrypted(res, 400, JSON.stringify({ error: 'kind must be "server" or "updater"' }))
+        return
+      }
+      const home =
+        process.env.NUTSHELL_HOME || path.join(process.env.HOME || '', '.nutshell')
+      const logPath = path.join(home, `${kind}.log`)
+      let line = ''
+      let exists = false
+      try {
+        const stat = fs.statSync(logPath)
+        exists = true
+        const PEEK_BYTES = 4096
+        const start = Math.max(0, stat.size - PEEK_BYTES)
+        const fd = fs.openSync(logPath, 'r')
+        try {
+          const len = stat.size - start
+          const buf = Buffer.alloc(len)
+          fs.readSync(fd, buf, 0, len, start)
+          const tail = buf.toString('utf8')
+          // Last non-empty line, ignoring trailing newline noise.
+          const lines = tail.split('\n').map((l) => l.trimEnd()).filter((l) => l.length > 0)
+          line = lines.length > 0 ? lines[lines.length - 1] : ''
+        } finally {
+          fs.closeSync(fd)
+        }
+      } catch {
+        // File missing / unreadable — return empty line, not an error.
+        // Lets the phone show "no log yet" without a failure modal.
+      }
+      sendEncrypted(res, 200, JSON.stringify({
+        kind,
+        path: exists ? logPath : null,
+        line,
+      }))
+      return
+    }
+
     sendJson(res, 404, { error: 'Not found' })
   }
 
