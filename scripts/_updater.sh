@@ -20,10 +20,14 @@
 #   3. If there are new commits AND the working tree is clean: stop the
 #      server, hard-reset to origin/<tracked-branch>, npm install if
 #      package-lock changed, relaunch.
-#   4. If there are new commits but the working tree is DIRTY: log a
-#      warning and skip. The deploy machine should never have local edits;
-#      this guard catches "I sshed in to debug" mistakes and stops them
-#      from deleting whatever was being debugged.
+#   4. If there are new commits but the working tree is DIRTY: stash
+#      the local edits with a timestamped marker, run the update, then
+#      try to pop the stash back. If the pop conflicts (upstream and
+#      local touched the same lines), the stash stays in the list for
+#      manual resolution and subsequent cycles refuse to add another
+#      auto-stash on top — preventing an infinite "stash → fail to pop
+#      → stash again" loop. The dirty file list is always logged so
+#      the user can see what got stashed.
 
 set -euo pipefail
 
@@ -300,13 +304,33 @@ for path in "${AUTO_OVERRIDE[@]}"; do
   git checkout -- "$path" 2>/dev/null || true
 done
 
-# There ARE new commits. Refuse if the working tree is dirty so we don't
-# clobber accidental local edits.
-if [ -n "$(git status --porcelain)" ]; then
-  log "WARN: dirty working tree; skipping update ${local_sha:0:7} → ${remote_sha:0:7}. Commit/stash/clean and the next cycle will pick it up."
-  # Still keep the server alive if it died.
-  is_running || start_server || true
-  exit 0
+# There ARE new commits. Auto-stash any dirty working tree so a stray
+# local edit doesn't permanently block updates. We always log what
+# was dirty and what we did so the user can audit.
+auto_stashed=0
+DIRTY="$(git status --porcelain)"
+if [ -n "$DIRTY" ]; then
+  log "dirty working tree before update ${local_sha:0:7} → ${remote_sha:0:7}:"
+  while IFS= read -r line; do
+    log "  $line"
+  done <<<"$DIRTY"
+  # Loop guard: if a previous auto-stash is still parked (because
+  # `git stash pop` conflicted), don't pile another one on top. User
+  # has to resolve the parked stash before updates resume.
+  if git stash list 2>/dev/null | grep -q 'updater-autostash'; then
+    log "WARN: prior auto-stash is still parked (git stash list); refusing to auto-stash again. Resolve it manually, then the next cycle will resume."
+    is_running || start_server || true
+    exit 0
+  fi
+  STASH_TAG="updater-autostash-$(date '+%Y%m%dT%H%M%S')"
+  if git stash push -u --quiet --message "$STASH_TAG" >/dev/null 2>&1; then
+    auto_stashed=1
+    log "auto-stashed local changes as '$STASH_TAG'"
+  else
+    log "WARN: git stash push failed; skipping update. Check repo state manually."
+    is_running || start_server || true
+    exit 0
+  fi
 fi
 
 log "update ${local_sha:0:7} → ${remote_sha:0:7}"
@@ -375,6 +399,18 @@ if echo "$changed" | grep -qx 'package-lock.json'; then
   log "package-lock.json changed; running npm install --omit=dev"
   if ! npm install --omit=dev --no-audit --no-fund --loglevel=error >>"$UPDATER_LOG" 2>&1; then
     log "WARN: npm install failed; starting server with whatever node_modules is on disk"
+  fi
+fi
+
+# If we stashed local changes before the reset, try to put them back.
+# Conflicts leave the stash in place for manual resolution and the
+# loop guard above will hold off auto-stashes on subsequent cycles
+# until the user clears it.
+if [ "$auto_stashed" = "1" ]; then
+  if git stash pop --quiet >/dev/null 2>&1; then
+    log "restored auto-stashed local changes"
+  else
+    log "WARN: stash pop conflicted with upstream changes; left stash for manual resolution. Inspect with 'git stash list', resolve via 'git stash pop' / 'git stash drop'."
   fi
 fi
 
