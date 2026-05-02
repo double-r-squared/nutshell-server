@@ -516,6 +516,120 @@ of truth for its own note set, so accepting a remote-initiated delete
 would let any other client wipe local notes. The events are still
 broadcast for future siblings (read-only dashboards, cross-device sync).
 
+## `POST /claude-code/status`
+
+Reports whether the Claude Code SDK is usable on this server. Used by
+the phone's CC session picker to surface "SDK not installed" /
+"authenticate first" hints rather than letting prompts silently fail.
+
+**Request (decrypted)**: `{}`
+
+**Response 200 (decrypted)**:
+
+```json
+{
+  "installed": true,
+  "hasProjectsDir": true,
+  "authenticated": true
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `installed` | `@anthropic-ai/claude-agent-sdk` resolves from `node_modules` |
+| `hasProjectsDir` | `~/.claude/projects` exists on the server's `$HOME` |
+| `authenticated` | Soft signal — currently mirrors `hasProjectsDir`. The server intentionally does not parse `.credentials.json` (would leak structure). The actual SDK call surfaces a clear error if auth is missing. |
+
+## `POST /claude-code/sessions`
+
+Lists resumable Claude Code sessions on disk. Reads
+`~/.claude/projects/<cwd-hash>/<session-id>.jsonl` files and pulls
+`cwd` + `summary` from each session's first record. Newest-first by
+`mtime`. Metadata only — the actual conversation history stays on
+disk and is read by the SDK when `--resume` kicks off.
+
+**Request (decrypted)**: `{}`
+
+**Response 200 (decrypted)**:
+
+```json
+{
+  "sessions": [
+    {
+      "sessionId": "01HXYZ...",
+      "cwd": "/Users/nate/code/foo",
+      "summary": "wire up the staging gate",
+      "mtime": 1714521600000,
+      "size": 48213
+    }
+  ]
+}
+```
+
+`sessions` may be empty if no projects directory exists, or if the
+directory exists but no `.jsonl` files have been created (fresh
+install). Returns `200` either way; the phone treats `sessions: []`
+as "no sessions available."
+
+## `WebSocket /chat/keys`
+
+Per-connection, per-chat-session WS used by the phone's chat tab.
+Originally an echo-only socket (`keystroke` ⇄ `displayed`), now also
+the streaming channel for both Ollama-style prompts and Claude Code
+remote-mode prompts.
+
+### Handshake
+
+Identical to `/events` — encrypted `{type: "hello"}` within 5 s,
+server replies `{type: "welcome"}`.
+
+### Echo frames (legacy)
+
+| Direction | Type | Payload |
+| --- | --- | --- |
+| → server | `keystroke` | `{type, sessionId, text}` |
+| ← server | `displayed` | `{type, sessionId, text}` |
+
+### Ollama / OpenRouter prompt frames
+
+| Direction | Type | Payload |
+| --- | --- | --- |
+| → server | `prompt` | `{type, sessionId, turnId, body}` (`body` is OpenAI-shaped — `{messages: [...], model?}`) |
+| ← server | `token` | `{type, sessionId, turnId, delta}` |
+| ← server | `done` | `{type, sessionId, turnId}` |
+| ← server | `error` | `{type, sessionId, turnId, error}` |
+
+### Claude Code prompt frames (added in 0.11.0)
+
+| Direction | Type | Payload |
+| --- | --- | --- |
+| → server | `prompt-claude-code` | `{type, sessionId, turnId, prompt, claudeCodeSessionId?, cwd?}` |
+| ← server | `cc-system` | `{type, sessionId, turnId, claudeCodeSessionId}` (sent once at turn start; carries the SDK-resolved session UUID — same as the request for resumes, freshly assigned for new threads) |
+| ← server | `cc-text` | `{type, sessionId, turnId, delta}` (assistant token deltas) |
+| ← server | `cc-tool-use` | `{type, sessionId, turnId, toolUseId, toolName, input}` |
+| ← server | `cc-tool-result` | `{type, sessionId, turnId, toolUseId, result}` |
+| ← server | `cc-permission-request` | `{type, sessionId, turnId, requestId, toolName, input}` |
+| ← server | `cc-choice-request` | `{type, sessionId, turnId, requestId, question, options}` |
+| ← server | `cc-done` | `{type, sessionId, turnId, claudeCodeSessionId}` |
+| ← server | `cc-error` | `{type, sessionId, turnId, error}` |
+| → server | `cc-permission-response` | `{type, requestId, decision}` (`decision` ∈ `'allow'` / `'deny'` / `'always-allow'`) |
+| → server | `cc-choice-response` | `{type, requestId, choice}` (empty string treated as cancel) |
+
+Permission and choice responses are keyed solely by `requestId` (no
+`turnId`) — the server's pending-resolver Map looks them up directly.
+Phone may safely have multiple in-flight requests across different
+turns; each carries its own `requestId`.
+
+If the WS closes while permission/choice resolvers are pending, the
+server resolves them to `'deny'` / `''` so the SDK doesn't hang
+forever after disconnect.
+
+Read-only Claude Code tools (`Read`, `Glob`, `Grep`, `WebFetch`,
+`WebSearch`, `TodoWrite`) auto-allow on the server side; only
+write-class tools (`Edit`, `Write`, `Bash`, `NotebookEdit`, etc.)
+fire `cc-permission-request`. Phone-side overlays (Sprint 3) own the
+UI; the wire format is final.
+
 ## `POST /admin/shutdown`
 
 Graceful remote shutdown. Authenticated via the PSK envelope. The server
@@ -546,6 +660,31 @@ re-probe `/health` after a short delay.
 ---
 
 ## Changelog
+
+### 0.11.0 — Claude Code remote mode
+
+New endpoints `POST /claude-code/status` and `POST /claude-code/sessions`
+let phones probe whether the SDK is usable on this server and list
+resumable on-disk sessions. `WS /chat/keys` extended with a
+`prompt-claude-code` request frame and the `cc-*` family of streaming
+event frames (`cc-system`, `cc-text`, `cc-tool-use`, `cc-tool-result`,
+`cc-permission-request`, `cc-choice-request`, `cc-done`, `cc-error`),
+plus phone-originated `cc-permission-response` / `cc-choice-response`
+replies. `/health.features.claudeCode` advertises whether the SDK is
+loadable.
+
+Implementation lives in [`lib/claude-code.js`](../lib/claude-code.js) —
+a CommonJS wrapper around the ESM-only `@anthropic-ai/claude-agent-sdk`
+(lazy dynamic import). Permission gating uses the SDK's `canUseTool`
+callback; read-only tools auto-allow, write-class tools fire a
+permission request through the WS. Custom MCP server registers a
+`prompt_user_choice` tool so models can ask the user mid-turn (resolved
+through `cc-choice-request` / `cc-choice-response`).
+
+Wire-additive — older phones that don't know about `cc-*` frames
+ignore them silently and lose nothing. Older servers that don't know
+`prompt-claude-code` produce no response; the phone sees the WS go
+silent and falls back to its own timeout.
 
 ### 0.7.4 — `server-updating` pre-signal + `server-status` WS event
 

@@ -160,7 +160,9 @@ All encrypted except `/health`. Full reference: [`docs/api.md`](docs/api.md).
 | `POST /llm/ping` | Fast liveness probe for the local LLM (~800 ms timeout) |
 | `POST /llm` | OpenAI-compatible chat completions passthrough to Ollama (only when `--ollama`) |
 | `WS /events` | Event stream — file events, project events, URL events, note events |
-| `WS /chat/keys` | Per-connection keystroke echo for the phone's chat tab. Same hello-auth handshake as `/events`. After auth, phone sends `{type: 'keystroke', sessionId, text}` and server replies with `{type: 'displayed', sessionId, text}`. No broadcast — each client sees only its own echoes. v1 is just a round-trip; v2 will land the LLM hop. |
+| `POST /claude-code/status` | Reports whether `@anthropic-ai/claude-agent-sdk` is loadable on this server and whether `~/.claude/projects` exists. Phone gates the CC picker on this. |
+| `POST /claude-code/sessions` | Lists resumable Claude Code sessions on disk (`~/.claude/projects/<hash>/<id>.jsonl`). Returns `{sessions: [{sessionId, cwd, summary, mtime, size}, ...]}` newest-first. |
+| `WS /chat/keys` | Per-connection chat socket for the phone's chat tab. Same hello-auth handshake as `/events`. Three roles: (1) keystroke echo (`keystroke` ⇄ `displayed`); (2) Ollama / OpenRouter prompt streaming (`prompt` → `token`/`done`/`error`); (3) Claude Code remote mode (`prompt-claude-code` → `cc-system` / `cc-text` / `cc-tool-use` / `cc-tool-result` / `cc-permission-request` / `cc-choice-request` / `cc-done` / `cc-error`, with phone-originated `cc-permission-response` / `cc-choice-response`). No broadcast. CC implementation in [`lib/claude-code.js`](lib/claude-code.js). |
 
 ### WebSocket lifecycle
 

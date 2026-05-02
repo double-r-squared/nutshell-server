@@ -988,6 +988,7 @@ function createServer(options = {}) {
       const home = process.env.HOME || ''
       const projectsDir = home ? path.join(home, '.claude', 'projects') : null
       const hasProjectsDir = !!projectsDir && fs.existsSync(projectsDir)
+      const claudePath = claudeCode.resolveClaudePath()
       sendEncrypted(res, 200, JSON.stringify({
         installed,
         hasProjectsDir,
@@ -995,6 +996,11 @@ function createServer(options = {}) {
         // .credentials.json (would leak structure to the phone). The
         // SDK call will fail with a clear error if auth is missing.
         authenticated: hasProjectsDir,
+        // Where the SDK is told to find the claude binary. null means
+        // we couldn't resolve one and the SDK is doing its own
+        // auto-detect (which can pick the wrong platform package on
+        // some glibc distros).
+        claudePath,
       }))
       return
     }
