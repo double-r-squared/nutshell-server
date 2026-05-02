@@ -217,15 +217,42 @@ esac
 
 # ── Optional: faster-whisper for server-side STT ────────────────────────────
 
-install_faster_whisper() {
-  if ! command -v python3 >/dev/null 2>&1; then
-    warn "python3 not found — STT install skipped. Install python3 + python3-pip and re-run with --with-stt."
-    return 1
+ensure_python3() {
+  if command -v python3 >/dev/null 2>&1; then return 0; fi
+  if command -v apt-get >/dev/null 2>&1 && [ "$EUID" -ne 0 ]; then
+    say "python3 not found — installing via sudo apt"
+    sudo apt-get install -y python3 || return 1
+    return 0
   fi
+  warn "python3 not found and no auto-install path. Install python3 manually then re-run with --with-stt."
+  return 1
+}
+
+ensure_pip() {
+  # Already there?
+  if command -v pip3 >/dev/null 2>&1 || command -v pip >/dev/null 2>&1; then
+    return 0
+  fi
+  # Auto-install python3-pip on Debian / Ubuntu — common case for the
+  # target audience and the only platform where we know the package
+  # name with confidence. Other distros: warn + skip.
+  if command -v apt-get >/dev/null 2>&1 && [ "$EUID" -ne 0 ]; then
+    say "pip not found — installing python3-pip via sudo apt"
+    sudo apt-get install -y python3-pip || return 1
+    return 0
+  fi
+  warn "pip / pip3 not found and no auto-install path. Install python3-pip manually then re-run with --with-stt."
+  return 1
+}
+
+install_faster_whisper() {
+  ensure_python3 || return 1
+  ensure_pip || return 1
+
   local pip_cmd
   pip_cmd="$(command -v pip3 2>/dev/null || command -v pip 2>/dev/null || true)"
   if [ -z "$pip_cmd" ]; then
-    warn "pip / pip3 not found — STT install skipped. Install python3-pip and re-run with --with-stt."
+    warn "pip still not on PATH after install attempt — try a fresh shell."
     return 1
   fi
 
@@ -251,13 +278,36 @@ install_faster_whisper() {
     say "faster-whisper installed and imports cleanly"
     return 0
   fi
-  warn "Install completed but import test failed — STT will not be available until faster-whisper imports cleanly from the systemd-user environment. Check PATH."
+  warn "Install completed but import test failed — STT will not be available until faster-whisper imports cleanly from the systemd-user environment."
+  warn "If python3 is on a venv path, set NUTSHELL_PYTHON_PATH in ~/.nutshell/config.sh."
   return 1
+}
+
+# Force the running server (if any) to exit so the next updater cycle
+# respawns it with the fresh config.sh + freshly-probed feature flags.
+# Without this, a reinstall that flipped features.transcribe doesn't
+# light up until the user manually kills the server. Best-effort —
+# we don't fail the install if no server was running.
+force_server_restart() {
+  local pid
+  pid="$(pgrep -f "node.*nutshell-server.*cli\.js" 2>/dev/null | head -1 || true)"
+  if [ -z "$pid" ]; then
+    return 0
+  fi
+  say "Killing running server (pid=$pid) so the next updater cycle re-probes"
+  kill -9 "$pid" 2>/dev/null || true
+  sleep 1
 }
 
 if [ "$WITH_STT" -eq 1 ]; then
   install_faster_whisper || warn "STT install did not complete — server will start with features.transcribe=false. Re-run with --with-stt after fixing the issue."
 fi
+
+# Always force-restart the running server (if any) — the feature
+# probes (claudeCode, transcribe) are cached at module load, so a
+# reinstall that changed install state needs a fresh server process
+# for /health to reflect reality.
+force_server_restart
 
 # ── First-cycle smoke test ──────────────────────────────────────────────────
 
