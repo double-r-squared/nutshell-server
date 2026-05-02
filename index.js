@@ -1675,6 +1675,11 @@ function createServer(options = {}) {
       await new Promise((resolve) => httpServer.close(() => resolve()))
       httpServer = null
     }
+    // Tear down the long-running transcribe daemon if one was
+    // spawned. Same shutdown shape as wss / httpServer above —
+    // best-effort, idempotent, doesn't block server stop on a
+    // hung subprocess.
+    try { transcribe.shutdown() } catch {}
   }
 
   return {
