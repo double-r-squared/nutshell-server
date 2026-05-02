@@ -19,6 +19,7 @@ const {
   DEFAULT_MODEL: OLLAMA_DEFAULT_MODEL,
   LIVE_PROBE_TIMEOUT_MS,
 } = require('./lib/llm')
+const claudeCode = require('./lib/claude-code')
 
 // ── Public library entry ──────────────────────────────────────────────────────
 //
@@ -362,6 +363,7 @@ function createServer(options = {}) {
           llm: llmReady,
           llmModel: llmReady ? ollama.model : undefined,
           push: true,
+          claudeCode: claudeCode.isInstalled(),
         },
         projectCount: projects.size,
         // Random UUIDs; safe to expose unauthenticated. The VS Code
@@ -970,6 +972,50 @@ function createServer(options = {}) {
       return
     }
 
+    // /claude-code/status — phone's "is Claude Code usable on this
+    // server" check. Returns whether the SDK package is installed and
+    // whether ~/.claude/projects exists (proxy for "user has run
+    // `claude login` and used the CLI at least once"). Authenticated
+    // via the same encrypt envelope as everything else.
+    if (req.method === 'POST' && pathname === '/claude-code/status') {
+      try {
+        await decryptBody(req)
+      } catch {
+        sendJson(res, 401, { error: 'Unauthorized' })
+        return
+      }
+      const installed = claudeCode.isInstalled()
+      const home = process.env.HOME || ''
+      const projectsDir = home ? path.join(home, '.claude', 'projects') : null
+      const hasProjectsDir = !!projectsDir && fs.existsSync(projectsDir)
+      sendEncrypted(res, 200, JSON.stringify({
+        installed,
+        hasProjectsDir,
+        // 'authenticated' is a soft signal — we don't try to read
+        // .credentials.json (would leak structure to the phone). The
+        // SDK call will fail with a clear error if auth is missing.
+        authenticated: hasProjectsDir,
+      }))
+      return
+    }
+
+    // /claude-code/sessions — list resumable Claude Code sessions on
+    // disk. Phone uses this to populate the "drop into a session"
+    // picker. Returns metadata only (sessionId, cwd, summary, mtime,
+    // size); the actual conversation history stays on disk and the
+    // SDK reads it when --resume kicks off.
+    if (req.method === 'POST' && pathname === '/claude-code/sessions') {
+      try {
+        await decryptBody(req)
+      } catch {
+        sendJson(res, 401, { error: 'Unauthorized' })
+        return
+      }
+      const sessions = claudeCode.listSessions()
+      sendEncrypted(res, 200, JSON.stringify({ sessions }))
+      return
+    }
+
     sendJson(res, 404, { error: 'Not found' })
   }
 
@@ -992,6 +1038,18 @@ function createServer(options = {}) {
         try { ws.close(4401, 'hello timeout') } catch {}
       }
     }, WS_HELLO_TIMEOUT_MS)
+
+    // Per-connection pending request resolvers. Each entry is keyed
+    // by a server-generated requestId; the value is a function that
+    // resolves the awaiting Promise inside streamClaudeCode's
+    // askPermission/askChoice callbacks. cc-permission-response and
+    // cc-choice-response frames look up their requestId here and
+    // resolve. Maps live on the connection so an orphaned request
+    // gets cleaned up when the WS closes (we abort all pending).
+    const pendingPermissions = new Map()
+    const pendingChoices = new Map()
+    let nextRequestId = 1
+    const newRequestId = () => `req-${Date.now()}-${nextRequestId++}`
 
     ws.on('message', (raw) => {
       let envelope
@@ -1094,6 +1152,144 @@ function createServer(options = {}) {
           })
         return
       }
+
+      // {type:'prompt-claude-code', sessionId, turnId, prompt,
+      //  claudeCodeSessionId?, cwd?} — kicks off a CC turn.
+      // Streams events back as cc-system / cc-text / cc-tool-use /
+      // cc-tool-result / cc-permission-request / cc-choice-request /
+      // cc-done / cc-error frames. Permission and choice handlers
+      // post a request frame and await the matching response frame
+      // (cc-permission-response / cc-choice-response) which the
+      // phone sends back once the user picks.
+      if (msg && msg.type === 'prompt-claude-code') {
+        const sessionId = typeof msg.sessionId === 'string' ? msg.sessionId : ''
+        const turnId = typeof msg.turnId === 'string' ? msg.turnId : ''
+        const prompt = typeof msg.prompt === 'string' ? msg.prompt : ''
+        const ccSessionId = typeof msg.claudeCodeSessionId === 'string'
+          ? msg.claudeCodeSessionId
+          : null
+        const cwd = typeof msg.cwd === 'string' ? msg.cwd : null
+        const ccSendFrame = (frame) => {
+          try {
+            ws.send(JSON.stringify(encrypt(JSON.stringify(frame), API_KEY)))
+          } catch {}
+        }
+        if (!sessionId || !turnId || !prompt) {
+          ccSendFrame({ type: 'cc-error', sessionId, turnId, error: 'invalid prompt-claude-code frame' })
+          return
+        }
+        if (!claudeCode.isInstalled()) {
+          ccSendFrame({
+            type: 'cc-error', sessionId, turnId,
+            error: 'Claude Code SDK not installed on the server',
+          })
+          return
+        }
+        const reqId = Math.random().toString(36).slice(2, 8)
+        const startedAt = Date.now()
+        console.log(
+          `[ws:chat ${reqId}] cc-prompt from ${addr} — ${ccSessionId ? `resume ${ccSessionId.slice(0, 8)}` : 'fresh'} ${prompt.length} chars`,
+        )
+
+        // askPermission posts a cc-permission-request frame and
+        // returns a Promise that resolves when the matching
+        // cc-permission-response arrives. The Promise is held in
+        // pendingPermissions until the response or until the WS
+        // closes (in which case we resolve to 'deny' so the SDK
+        // doesn't hang waiting forever after disconnect).
+        const askPermission = (toolName, input) => new Promise((resolve) => {
+          const requestId = newRequestId()
+          pendingPermissions.set(requestId, resolve)
+          ccSendFrame({
+            type: 'cc-permission-request',
+            sessionId, turnId, requestId,
+            toolName, input,
+          })
+        })
+
+        const askChoice = (question, options) => new Promise((resolve) => {
+          const requestId = newRequestId()
+          pendingChoices.set(requestId, resolve)
+          ccSendFrame({
+            type: 'cc-choice-request',
+            sessionId, turnId, requestId,
+            question, options,
+          })
+        })
+
+        const onEvent = (evt) => {
+          // Map controller-level event shape to the WS wire format.
+          const base = { sessionId, turnId }
+          if (evt.kind === 'system') {
+            ccSendFrame({ ...base, type: 'cc-system', claudeCodeSessionId: evt.sessionId })
+          } else if (evt.kind === 'text') {
+            ccSendFrame({ ...base, type: 'cc-text', delta: evt.delta })
+          } else if (evt.kind === 'tool-use') {
+            ccSendFrame({
+              ...base, type: 'cc-tool-use',
+              toolName: evt.toolName, input: evt.input, toolUseId: evt.toolUseId,
+            })
+          } else if (evt.kind === 'tool-result') {
+            ccSendFrame({
+              ...base, type: 'cc-tool-result',
+              toolUseId: evt.toolUseId, result: evt.result,
+            })
+          } else if (evt.kind === 'done') {
+            ccSendFrame({ ...base, type: 'cc-done', claudeCodeSessionId: evt.sessionId })
+          }
+        }
+
+        claudeCode.streamClaudeCode({
+          sessionId: ccSessionId,
+          prompt,
+          cwd,
+          askPermission,
+          askChoice,
+          onEvent,
+        })
+          .then(() => {
+            const ms = Date.now() - startedAt
+            console.log(`[ws:chat ${reqId}] cc-prompt complete in ${formatDuration(ms)}`)
+          })
+          .catch((err) => {
+            const message = err?.message || String(err)
+            console.warn(`[ws:chat ${reqId}] cc-prompt failed: ${message}`)
+            ccSendFrame({ type: 'cc-error', sessionId, turnId, error: message })
+          })
+        return
+      }
+
+      // {type:'cc-permission-response', requestId, decision} —
+      // phone's reply to a cc-permission-request. decision is one
+      // of 'allow' / 'deny' / 'always-allow'. Resolves the
+      // pending askPermission Promise.
+      if (msg && msg.type === 'cc-permission-response') {
+        const requestId = typeof msg.requestId === 'string' ? msg.requestId : ''
+        const decision = msg.decision
+        const resolver = pendingPermissions.get(requestId)
+        if (resolver) {
+          pendingPermissions.delete(requestId)
+          resolver(decision === 'allow' || decision === 'always-allow' || decision === 'deny'
+            ? decision
+            : 'deny')
+        }
+        return
+      }
+
+      // {type:'cc-choice-response', requestId, choice} — phone's
+      // reply to a cc-choice-request. Resolves the pending
+      // askChoice Promise with the picked option string.
+      if (msg && msg.type === 'cc-choice-response') {
+        const requestId = typeof msg.requestId === 'string' ? msg.requestId : ''
+        const choice = typeof msg.choice === 'string' ? msg.choice : ''
+        const resolver = pendingChoices.get(requestId)
+        if (resolver) {
+          pendingChoices.delete(requestId)
+          resolver(choice)
+        }
+        return
+      }
+
       // Unknown frame types are ignored — keeps the wire forward-
       // compatible when the phone introduces commit/cancel/etc.
     })
@@ -1101,6 +1297,15 @@ function createServer(options = {}) {
     ws.on('close', () => {
       clearTimeout(timeout)
       if (authenticated) console.log(`[ws:chat] closed from ${addr}`)
+      // Resolve any orphaned permission / choice requests so
+      // streamClaudeCode's awaits don't hang forever after the WS
+      // dropped. Permissions default to 'deny' (safer than 'allow'
+      // for a connection that may have been hijacked); choice
+      // requests resolve to '' which the SDK treats as no-answer.
+      for (const [, resolve] of pendingPermissions) resolve('deny')
+      pendingPermissions.clear()
+      for (const [, resolve] of pendingChoices) resolve('')
+      pendingChoices.clear()
     })
     ws.on('error', (err) => {
       clearTimeout(timeout)
