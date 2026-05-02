@@ -1022,6 +1022,29 @@ function createServer(options = {}) {
       return
     }
 
+    // /claude-code/turns — read the full transcript of an on-disk
+    // session and return it as Turn-shaped pairs the phone can drop
+    // straight into Session.turns. Used by the chat detail pane on
+    // first open of a resumed session so the user sees existing
+    // history rather than an empty pane. Body: {sessionId}.
+    if (req.method === 'POST' && pathname === '/claude-code/turns') {
+      let body
+      try {
+        body = await decryptBody(req)
+      } catch {
+        sendJson(res, 401, { error: 'Unauthorized' })
+        return
+      }
+      const sessionId = body && typeof body.sessionId === 'string' ? body.sessionId : ''
+      if (!sessionId) {
+        sendEncrypted(res, 400, JSON.stringify({ error: 'sessionId required' }))
+        return
+      }
+      const turns = claudeCode.readSessionTurns(sessionId)
+      sendEncrypted(res, 200, JSON.stringify({ turns }))
+      return
+    }
+
     sendJson(res, 404, { error: 'Not found' })
   }
 
@@ -1175,6 +1198,9 @@ function createServer(options = {}) {
           ? msg.claudeCodeSessionId
           : null
         const cwd = typeof msg.cwd === 'string' ? msg.cwd : null
+        const appendSystemPrompt = typeof msg.appendSystemPrompt === 'string'
+          ? msg.appendSystemPrompt
+          : null
         const ccSendFrame = (frame) => {
           try {
             ws.send(JSON.stringify(encrypt(JSON.stringify(frame), API_KEY)))
@@ -1249,6 +1275,7 @@ function createServer(options = {}) {
           sessionId: ccSessionId,
           prompt,
           cwd,
+          appendSystemPrompt,
           askPermission,
           askChoice,
           onEvent,

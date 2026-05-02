@@ -571,6 +571,41 @@ directory exists but no `.jsonl` files have been created (fresh
 install). Returns `200` either way; the phone treats `sessions: []`
 as "no sessions available."
 
+## `POST /claude-code/turns`
+
+Returns the parsed transcript of an on-disk Claude Code session as
+Turn-shaped pairs. Used by the phone's chat detail pane on first open
+of a resumed session so the user sees the existing history rather
+than an empty pane. Best-effort parse: pairs `user` records with the
+`assistant` text blocks that follow them, folds `tool_use` /
+`tool_result` blocks into the open turn's `toolEvents` array, and
+closes a turn on each `result` record.
+
+**Request (decrypted)**: `{ "sessionId": "01HXYZ..." }`
+
+**Response 200 (decrypted)**:
+
+```json
+{
+  "turns": [
+    {
+      "id": "uuid-from-jsonl-or-synthetic",
+      "prompt": "first user message text",
+      "reply": "assistant response (text blocks concatenated)",
+      "createdAt": 1714521600000,
+      "toolEvents": [
+        { "kind": "tool-use", "toolUseId": "...", "toolName": "Read", "input": { ... } },
+        { "kind": "tool-result", "toolUseId": "...", "result": "..." }
+      ]
+    }
+  ]
+}
+```
+
+`turns: []` when the `.jsonl` doesn't exist for that `sessionId` or
+fails to parse — the phone treats both as "no history available" and
+keeps going.
+
 ## `WebSocket /chat/keys`
 
 Per-connection, per-chat-session WS used by the phone's chat tab.
@@ -603,7 +638,7 @@ server replies `{type: "welcome"}`.
 
 | Direction | Type | Payload |
 | --- | --- | --- |
-| → server | `prompt-claude-code` | `{type, sessionId, turnId, prompt, claudeCodeSessionId?, cwd?}` |
+| → server | `prompt-claude-code` | `{type, sessionId, turnId, prompt, claudeCodeSessionId?, cwd?, appendSystemPrompt?}` (the optional `appendSystemPrompt` is appended to the SDK's built-in agent system prompt for this turn — used by the phone to constrain output formatting for the HUD without losing tool-use intelligence) |
 | ← server | `cc-system` | `{type, sessionId, turnId, claudeCodeSessionId}` (sent once at turn start; carries the SDK-resolved session UUID — same as the request for resumes, freshly assigned for new threads) |
 | ← server | `cc-text` | `{type, sessionId, turnId, delta}` (assistant token deltas) |
 | ← server | `cc-tool-use` | `{type, sessionId, turnId, toolUseId, toolName, input}` |
@@ -660,6 +695,49 @@ re-probe `/health` after a short delay.
 ---
 
 ## Changelog
+
+### 0.11.2 — Claude Code session import + HUD output harness
+
+New endpoint `POST /claude-code/turns` returns the parsed transcript
+of an on-disk session as Turn-shaped pairs. Phone uses it on first
+open of a resumed session to populate the chat history pane (which
+was previously empty because turns lived only in the `.jsonl`).
+
+`prompt-claude-code` WS frame gains an optional `appendSystemPrompt`
+field. When set, the server passes it through to the SDK's
+`appendSystemPrompt` option so callers can layer additional system
+instructions on top of Claude Code's built-in agent prompt without
+replacing it. Phone uses this to constrain the assistant's text
+output to plain ASCII so the 999-byte HUD container can render it
+without clipping or markdown artifacts. Tool calls and tool results
+are unaffected — only the assistant's text replies inherit the
+constraint.
+
+`listSessions()` falls back to the first user-message text (truncated
+to 80 chars, single-lined) when the `.jsonl` head has no `summary`
+record. Pre-summary sessions previously surfaced as `(no summary)`
+in the picker, which made resumes hard to identify; they now show
+the prompt the session opened with.
+
+0.11.1 → 0.11.2.
+
+### 0.11.1 — explicit `pathToClaudeCodeExecutable` resolution
+
+The SDK's bundled platform-binary auto-detect picks the wrong libc
+variant on some glibc-based Linuxes (e.g. Debian 13 / glibc 2.41
+selects the `linux-x64-musl` package, which then errors at runtime
+because no musl runtime is available). `lib/claude-code.js` now
+resolves the user's installed `claude` CLI via
+`NUTSHELL_CLAUDE_PATH` env override → `which claude` fallback and
+passes the resolved path to `query()` as
+`pathToClaudeCodeExecutable`, side-stepping the broken auto-detect.
+
+`/claude-code/status` gains a `claudePath` field (the resolved path,
+or `null` if neither override nor `which` produced one) so phones
+can surface the exact binary the SDK is driving.
+
+0.11.0 → 0.11.1. No wire-additive change for older phones — existing
+fields are preserved; the `claudePath` field is purely informational.
 
 ### 0.11.0 — Claude Code remote mode
 
