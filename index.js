@@ -20,6 +20,7 @@ const {
   LIVE_PROBE_TIMEOUT_MS,
 } = require('./lib/llm')
 const claudeCode = require('./lib/claude-code')
+const transcribe = require('./lib/transcribe')
 
 // ── Public library entry ──────────────────────────────────────────────────────
 //
@@ -364,6 +365,7 @@ function createServer(options = {}) {
           llmModel: llmReady ? ollama.model : undefined,
           push: true,
           claudeCode: claudeCode.isInstalled(),
+          transcribe: transcribe.isAvailable(),
         },
         projectCount: projects.size,
         // Random UUIDs; safe to expose unauthenticated. The VS Code
@@ -1349,6 +1351,165 @@ function createServer(options = {}) {
     })
   }
 
+  // /transcribe/stream — per-connection live STT pipe. Phone sends
+  // {type: 'hello'} for auth, then {type: 'audio', sessionId, pcm}
+  // frames carrying base64-encoded 16-bit signed PCM at the configured
+  // sample rate (default 16 kHz). Server routes audio into the
+  // transcribe module's streaming session and pushes back partial /
+  // final / error frames as the daemon emits them. {type: 'end'}
+  // closes the audio side and triggers the final transcribe pass;
+  // {type: 'abort'} drops the buffer without emitting a final.
+  //
+  // v1 (batch A1): the wire scaffold lands here so the phone can
+  // connect, but transcribe.startStream() throws until A2 wires the
+  // Python daemon. Connections get a clear cc-error-shaped error
+  // frame on the first audio attempt rather than silent timeouts.
+  function handleTranscribeStreamConnection(ws, req) {
+    let authenticated = false
+    const addr = req ? clientAddr(req) : 'unknown'
+    console.log(`[ws:transcribe] connection opened from ${addr}`)
+    const timeout = setTimeout(() => {
+      if (!authenticated) {
+        console.warn(`[ws:transcribe] hello timeout from ${addr}`)
+        try { ws.close(4401, 'hello timeout') } catch {}
+      }
+    }, WS_HELLO_TIMEOUT_MS)
+
+    let activeStream = null
+    let activeSessionId = ''
+
+    const sendFrame = (frame) => {
+      try {
+        ws.send(JSON.stringify(encrypt(JSON.stringify(frame), API_KEY)))
+      } catch {}
+    }
+
+    const startSession = (sessionId, opts) => {
+      if (activeStream) {
+        // Concurrent transcribe on the same WS is not supported in
+        // v1 — abort the previous stream so the new one runs cleanly.
+        try { activeStream.abort() } catch {}
+      }
+      activeSessionId = sessionId
+      try {
+        activeStream = transcribe.startStream(opts)
+      } catch (err) {
+        const message = err && err.message ? err.message : String(err)
+        sendFrame({ type: 'error', sessionId, error: message })
+        activeStream = null
+        return
+      }
+      activeStream.onPartial((text) => {
+        sendFrame({ type: 'partial', sessionId, text })
+      })
+      activeStream.onFinal((text) => {
+        sendFrame({ type: 'final', sessionId, text })
+      })
+      activeStream.onError((message) => {
+        sendFrame({ type: 'error', sessionId, error: message })
+      })
+    }
+
+    ws.on('message', (raw) => {
+      let envelope
+      try { envelope = JSON.parse(raw.toString('utf8')) }
+      catch {
+        console.warn(`[ws:transcribe] malformed envelope from ${addr}`)
+        ws.close(4400, 'malformed'); return
+      }
+      let plain
+      try { plain = decrypt(envelope, API_KEY) }
+      catch {
+        console.warn(`[ws:transcribe] auth rejected from ${addr} — key mismatch`)
+        ws.close(4401, 'unauthorized'); return
+      }
+      let msg
+      try { msg = JSON.parse(plain) }
+      catch {
+        console.warn(`[ws:transcribe] malformed plaintext from ${addr}`)
+        ws.close(4400, 'malformed'); return
+      }
+
+      if (!authenticated) {
+        if (msg && msg.type === 'hello') {
+          authenticated = true
+          clearTimeout(timeout)
+          console.log(`[ws:transcribe] authenticated ${addr}`)
+          try {
+            ws.send(JSON.stringify(encrypt(JSON.stringify({
+              type: 'welcome',
+              available: transcribe.isAvailable(),
+            }), API_KEY)))
+          } catch {}
+        } else {
+          ws.close(4401, 'expected hello')
+        }
+        return
+      }
+
+      // {type:'audio', sessionId, pcm} — phone ships a base64 PCM
+      // chunk. The first one in a session triggers startStream; the
+      // rest feed the daemon. sampleRate / language / model are
+      // captured at session start via the optional fields on the
+      // first audio frame (or the explicit 'start' frame below).
+      if (msg && msg.type === 'audio') {
+        const sessionId = typeof msg.sessionId === 'string' ? msg.sessionId : ''
+        if (!sessionId) return
+        if (!activeStream || activeSessionId !== sessionId) {
+          startSession(sessionId, {
+            sampleRate: typeof msg.sampleRate === 'number' ? msg.sampleRate : 16000,
+            language: typeof msg.language === 'string' ? msg.language : null,
+            model: typeof msg.model === 'string' ? msg.model : null,
+          })
+          if (!activeStream) return  // startSession already emitted the error
+        }
+        const b64 = typeof msg.pcm === 'string' ? msg.pcm : ''
+        if (!b64) return
+        try {
+          const buf = Buffer.from(b64, 'base64')
+          activeStream.sendAudio(buf)
+        } catch (err) {
+          const message = err && err.message ? err.message : String(err)
+          sendFrame({ type: 'error', sessionId, error: `audio decode failed: ${message}` })
+        }
+        return
+      }
+
+      // {type:'end', sessionId} — phone hit pause. Daemon runs the
+      // final pass; final frame ships when ready.
+      if (msg && msg.type === 'end') {
+        const sessionId = typeof msg.sessionId === 'string' ? msg.sessionId : activeSessionId
+        if (activeStream && sessionId === activeSessionId) {
+          try { activeStream.end() } catch {}
+        }
+        return
+      }
+
+      // {type:'abort', sessionId} — phone cancelled. Drop the buffer
+      // without emitting a final. Same path the WS-close handler uses.
+      if (msg && msg.type === 'abort') {
+        if (activeStream) {
+          try { activeStream.abort() } catch {}
+          activeStream = null
+        }
+        return
+      }
+    })
+
+    ws.on('close', () => {
+      clearTimeout(timeout)
+      if (authenticated) console.log(`[ws:transcribe] closed from ${addr}`)
+      if (activeStream) {
+        try { activeStream.abort() } catch {}
+        activeStream = null
+      }
+    })
+    ws.on('error', (err) => {
+      clearTimeout(timeout)
+      console.warn(`[ws:transcribe] error from ${addr}: ${err.message}`)
+    })
+  }
+
   function handleConnection(ws, req) {
     let authenticated = false
     const addr = req ? clientAddr(req) : 'unknown'
@@ -1444,6 +1605,8 @@ function createServer(options = {}) {
     wss.on('connection', (ws, req) => {
       if (req && req.__nutshellPath === '/chat/keys') {
         handleChatKeysConnection(ws, req)
+      } else if (req && req.__nutshellPath === '/transcribe/stream') {
+        handleTranscribeStreamConnection(ws, req)
       } else {
         handleConnection(ws, req)
       }
@@ -1458,6 +1621,11 @@ function createServer(options = {}) {
       }
       if (u.pathname === '/chat/keys') {
         req.__nutshellPath = '/chat/keys'
+        wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req))
+        return
+      }
+      if (u.pathname === '/transcribe/stream') {
+        req.__nutshellPath = '/transcribe/stream'
         wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req))
         return
       }
