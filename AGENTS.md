@@ -163,6 +163,7 @@ All encrypted except `/health`. Full reference: [`docs/api.md`](docs/api.md).
 | `POST /claude-code/status` | Reports whether `@anthropic-ai/claude-agent-sdk` is loadable on this server and whether `~/.claude/projects` exists. Phone gates the CC picker on this. |
 | `POST /claude-code/sessions` | Lists resumable Claude Code sessions on disk (`~/.claude/projects/<hash>/<id>.jsonl`). Returns `{sessions: [{sessionId, cwd, summary, mtime, size}, ...]}` newest-first. |
 | `WS /chat/keys` | Per-connection chat socket for the phone's chat tab. Same hello-auth handshake as `/events`. Three roles: (1) keystroke echo (`keystroke` ⇄ `displayed`); (2) Ollama / OpenRouter prompt streaming (`prompt` → `token`/`done`/`error`); (3) Claude Code remote mode (`prompt-claude-code` → `cc-system` / `cc-text` / `cc-tool-use` / `cc-tool-result` / `cc-permission-request` / `cc-choice-request` / `cc-done` / `cc-error`, with phone-originated `cc-permission-response` / `cc-choice-response`). No broadcast. CC implementation in [`lib/claude-code.js`](lib/claude-code.js). |
+| `WS /transcribe/stream` | Per-connection live STT pipe. Phone ships base64-PCM audio frames; server streams partial / final transcripts back. Backed by `faster-whisper` running as a long-running Python subprocess (`scripts/transcribe-daemon.py`); install via `--with-stt` flag on `install-updater.sh`. Daemon lifecycle in [`lib/transcribe.js`](lib/transcribe.js). `/health.features.transcribe` advertises whether it's configured. |
 
 ### WebSocket lifecycle
 

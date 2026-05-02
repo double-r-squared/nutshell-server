@@ -33,7 +33,9 @@ encrypted flow.
     "url": true,
     "llm": true,
     "llmModel": "llama3.2:3b",
-    "push": true
+    "push": true,
+    "claudeCode": true,
+    "transcribe": true
   },
   "projectCount": 3,
   "projectIds": ["proj-uuid-1", "proj-uuid-2", "proj-uuid-3"]
@@ -665,6 +667,53 @@ write-class tools (`Edit`, `Write`, `Bash`, `NotebookEdit`, etc.)
 fire `cc-permission-request`. Phone-side overlays (Sprint 3) own the
 UI; the wire format is final.
 
+## `WebSocket /transcribe/stream`
+
+Streaming speech-to-text. Phone opens a WS, ships PCM audio chunks
+as they're captured from the G2 mic, gets back live partial
+transcripts as the daemon emits them and a locked final on pause.
+Backed by `faster-whisper` running as a long-running Python
+subprocess (`scripts/transcribe-daemon.py`). Available when the
+server's install includes faster-whisper —
+`/health.features.transcribe` advertises the readiness flag.
+
+### Handshake
+
+Identical to `/events` and `/chat/keys` — encrypted `{type: "hello"}`
+within 5 s, server replies `{type: "welcome", available: bool}`.
+The `available` flag mirrors `/health.features.transcribe` for
+clients that opened the WS without a prior probe.
+
+### Frames
+
+| Direction | Type | Payload |
+| --- | --- | --- |
+| → server | `audio` | `{type, sessionId, pcm: base64, sampleRate?, language?, model?}` (16-bit signed PCM, default 16 kHz) |
+| → server | `end` | `{type, sessionId}` — phone hit pause; daemon runs final pass + emits `final` |
+| → server | `abort` | `{type, sessionId}` — phone cancelled; daemon drops buffer, no `final` emitted |
+| ← server | `welcome` | `{type, available}` (sent once after auth) |
+| ← server | `partial` | `{type, sessionId, text}` (live, updated ~1× per second) |
+| ← server | `final` | `{type, sessionId, text}` (after `end`) |
+| ← server | `error` | `{type, sessionId, error}` |
+
+Sessions are demuxed by `sessionId` (phone-generated). The daemon
+multiplexes multiple sessions on one WS, though phones currently
+only run one at a time.
+
+The first `audio` frame on a new `sessionId` triggers daemon-side
+session start with the supplied `sampleRate` / `language` / `model`.
+Subsequent frames append to the buffer. The `model` field on the
+first frame picks the Whisper variant (`tiny` / `base` / `small` /
+`medium` / `large-v3`) — note that the daemon honors the **first
+session's** model choice for its lifetime; switching mid-process
+requires a server restart. Caveat documented in the phone's
+Voice-to-text Settings card.
+
+WS-close (or `abort` frame) drops the active session without
+emitting a final. Daemon crash emits `{type: 'error', error:
+'transcribe daemon exited'}` to all active streams and respawns
+on the next `startStream` call.
+
 ## `POST /admin/shutdown`
 
 Graceful remote shutdown. Authenticated via the PSK envelope. The server
@@ -695,6 +744,41 @@ re-probe `/health` after a short delay.
 ---
 
 ## Changelog
+
+### 0.12.0 → 0.12.3 — Voice-to-text (Sprint 5)
+
+New `WebSocket /transcribe/stream` endpoint streams 16-bit signed
+PCM from the phone, runs it through `faster-whisper` in a long-
+running Python subprocess (`scripts/transcribe-daemon.py`), and
+ships back live partials + a locked final on pause. Encrypted same
+envelope as everything else. Multiplexes multiple in-flight
+sessions by phone-supplied `sessionId`.
+
+`/health.features.transcribe` advertises whether the daemon is
+configured. Probe runs at module load via
+`python3 -c "import faster_whisper"`; cached for the process
+lifetime. Probe failures log a hint with the install command.
+
+`lib/transcribe.js` owns the daemon lifecycle — lazy spawn on
+first `startStream`, model loaded once (loadtime ~1-3s amortised),
+sessions demuxed via base64-PCM-over-stdin JSON-line frames.
+Daemon stderr forwarded to server log tagged `[transcribe-daemon]`.
+WS-close / abort drop the active stream cleanly.
+
+`NUTSHELL_PYTHON_PATH` env override lets users pin a specific
+`python3` (venv case) — same pattern as `NUTSHELL_CLAUDE_PATH` for
+the Claude Code SDK.
+
+`bash scripts/install-updater.sh --with-stt` installs faster-whisper
++ numpy via `pip --user` (with a fallback to `--break-system-packages`
+for Debian 12+ / Ubuntu 23.04+ PEP 668), auto-installs python3 +
+python3-pip via apt-get when missing, and force-restarts the
+running server at end-of-install so cached probes reflect reality.
+
+0.11.4 → 0.12.0: `/transcribe/stream` WS scaffold + `features.transcribe`.
+0.12.0 → 0.12.1: faster-whisper Python daemon wired through.
+0.12.1 → 0.12.2: install script gains `--with-stt`.
+0.12.2 → 0.12.3: zero-config polish (auto-install pip, force restart, NUTSHELL_PYTHON_PATH).
 
 ### 0.11.2 — Claude Code session import + HUD output harness
 
