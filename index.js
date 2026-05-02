@@ -1219,8 +1219,9 @@ function createServer(options = {}) {
         }
         const reqId = Math.random().toString(36).slice(2, 8)
         const startedAt = Date.now()
+        const harnessLen = appendSystemPrompt ? appendSystemPrompt.length : 0
         console.log(
-          `[ws:chat ${reqId}] cc-prompt from ${addr} — ${ccSessionId ? `resume ${ccSessionId.slice(0, 8)}` : 'fresh'} ${prompt.length} chars`,
+          `[ws:chat ${reqId}] cc-prompt from ${addr} — ${ccSessionId ? `resume ${ccSessionId.slice(0, 8)}` : 'fresh'} ${prompt.length} chars${harnessLen > 0 ? ` + ${harnessLen}B harness` : ' (no harness)'}`,
         )
 
         // askPermission posts a cc-permission-request frame and
