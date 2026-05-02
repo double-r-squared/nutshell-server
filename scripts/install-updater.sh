@@ -7,12 +7,20 @@
 # Usage:
 #   bash scripts/install-updater.sh                      # bare server, no LLM
 #   bash scripts/install-updater.sh --ollama             # match the start-with-llm.sh defaults
+#   bash scripts/install-updater.sh --with-stt           # also install faster-whisper for server-side STT
+#   bash scripts/install-updater.sh --ollama --with-stt  # both
 #   bash scripts/install-updater.sh --ollama --port 4242 # extra args pass through
 #   bash scripts/install-updater.sh --reinstall …        # nuke and re-install
 #
 # Args after the leading flags pass through to start-with-llm.sh on every
 # server (re)launch. Edit them later by re-running with --reinstall, or
 # by editing ~/.nutshell/config.sh directly.
+#
+# --with-stt installs faster-whisper + numpy via pip --user (with the
+# --break-system-packages escape for Debian 12+ PEP 668 enforcement).
+# The first /transcribe/stream call downloads the chosen Whisper
+# model (~140MB for `base`) into ~/.cache/huggingface/. Adds ~5min
+# to first install on a typical link.
 #
 # Idempotent: if ~/.nutshell/ already exists, prints a hint and exits 0.
 # Pass --reinstall to overwrite.
@@ -30,13 +38,20 @@ SYSTEMD_TIMER="$SYSTEMD_DIR/nutshell-updater.timer"
 CRON_MARKER='# nutshell-updater'
 
 REINSTALL=0
+WITH_STT=0
 LAUNCH_ARGS=()
 for arg in "$@"; do
-  if [ "$arg" = "--reinstall" ]; then
-    REINSTALL=1
-  else
-    LAUNCH_ARGS+=("$arg")
-  fi
+  case "$arg" in
+    --reinstall)
+      REINSTALL=1
+      ;;
+    --with-stt)
+      WITH_STT=1
+      ;;
+    *)
+      LAUNCH_ARGS+=("$arg")
+      ;;
+  esac
 done
 
 say() { printf '\033[36m[install-updater]\033[0m %s\n' "$*"; }
@@ -200,11 +215,64 @@ case "$(uname -s)" in
     ;;
 esac
 
+# ── Optional: faster-whisper for server-side STT ────────────────────────────
+
+install_faster_whisper() {
+  if ! command -v python3 >/dev/null 2>&1; then
+    warn "python3 not found — STT install skipped. Install python3 + python3-pip and re-run with --with-stt."
+    return 1
+  fi
+  local pip_cmd
+  pip_cmd="$(command -v pip3 2>/dev/null || command -v pip 2>/dev/null || true)"
+  if [ -z "$pip_cmd" ]; then
+    warn "pip / pip3 not found — STT install skipped. Install python3-pip and re-run with --with-stt."
+    return 1
+  fi
+
+  if python3 -c "import faster_whisper" 2>/dev/null; then
+    say "faster-whisper already installed — skipping pip install"
+    return 0
+  fi
+
+  say "Installing faster-whisper + numpy via $pip_cmd"
+  # Try plain --user first. PEP 668 (Debian 12+, Ubuntu 23.04+) blocks
+  # system-wide pip; --break-system-packages is the documented escape
+  # for "I really do want this in my user site-packages." Fall back
+  # to it on the first failure rather than asking the user to retry.
+  if ! "$pip_cmd" install --user faster-whisper numpy 2>/dev/null; then
+    say "Plain --user install hit PEP 668 — retrying with --break-system-packages"
+    if ! "$pip_cmd" install --user --break-system-packages faster-whisper numpy; then
+      warn "pip install failed. Install manually: $pip_cmd install --user --break-system-packages faster-whisper numpy"
+      return 1
+    fi
+  fi
+
+  if python3 -c "import faster_whisper; print('OK', faster_whisper.__version__)" 2>&1 | grep -q '^OK'; then
+    say "faster-whisper installed and imports cleanly"
+    return 0
+  fi
+  warn "Install completed but import test failed — STT will not be available until faster-whisper imports cleanly from the systemd-user environment. Check PATH."
+  return 1
+}
+
+if [ "$WITH_STT" -eq 1 ]; then
+  install_faster_whisper || warn "STT install did not complete — server will start with features.transcribe=false. Re-run with --with-stt after fixing the issue."
+fi
+
 # ── First-cycle smoke test ──────────────────────────────────────────────────
 
 say "Running first updater cycle"
 if ! /bin/bash "$NUTSHELL_HOME/updater.sh"; then
   warn "First cycle returned non-zero. Check $NUTSHELL_HOME/updater.log"
+fi
+
+stt_status="not requested (re-run with --with-stt to enable)"
+if [ "$WITH_STT" -eq 1 ]; then
+  if python3 -c "import faster_whisper" 2>/dev/null; then
+    stt_status="ready (faster-whisper installed)"
+  else
+    stt_status="install failed — see warnings above"
+  fi
 fi
 
 cat <<EOF
@@ -214,11 +282,13 @@ Installed.
 Server launch args:    ${LAUNCH_ARGS[*]:-(none)}
 Repo:                  $REPO_DIR
 State directory:       $NUTSHELL_HOME
+STT (faster-whisper):  $stt_status
 
 Useful commands:
   tail -f $NUTSHELL_HOME/updater.log         # updater activity
   tail -f $NUTSHELL_HOME/server.log          # server stdout/stderr
-  bash scripts/install-updater.sh --reinstall    # change launch args
-  bash scripts/uninstall-updater.sh              # remove everything
+  bash scripts/install-updater.sh --reinstall          # change launch args
+  bash scripts/install-updater.sh --reinstall --with-stt   # add STT to an existing install
+  bash scripts/uninstall-updater.sh                    # remove everything
 
 EOF
