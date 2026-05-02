@@ -1201,6 +1201,7 @@ function createServer(options = {}) {
         const appendSystemPrompt = typeof msg.appendSystemPrompt === 'string'
           ? msg.appendSystemPrompt
           : null
+        const model = typeof msg.model === 'string' ? msg.model : null
         const ccSendFrame = (frame) => {
           try {
             ws.send(JSON.stringify(encrypt(JSON.stringify(frame), API_KEY)))
@@ -1277,6 +1278,7 @@ function createServer(options = {}) {
           prompt,
           cwd,
           appendSystemPrompt,
+          model,
           askPermission,
           askChoice,
           onEvent,

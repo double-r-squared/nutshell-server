@@ -1,6 +1,6 @@
 {
   "name": "nutshell-server",
-  "version": "0.11.3",
+  "version": "0.11.4",
   "description": "Local server for Nutshell — streams project docs and browser URLs to the Even Realities G2 glasses companion app. PSK-encrypted transport over plain HTTP.",
   "main": "index.js",
   "type": "commonjs",
