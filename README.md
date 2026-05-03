@@ -1,13 +1,16 @@
+<p align="center">
+  <img src="./icon.png" width="128" height="128" alt="Nutshell" />
+</p>
+
 <h1 align="center">nutshell-server</h1>
 
 <p align="center">
   The local hub every other Nutshell piece talks to.
 </p>
 
+
 <p align="center">
-  <a href="https://github.com/double-r-squared/nutshell-vscode">VS Code Extension</a>
-  ·
-  <a href="https://github.com/double-r-squared/nutshell-browser">Browser Extension</a>
+  <a href="https://github.com/double-r-squared/nutshell-server/releases"><img src="https://img.shields.io/github/v/release/double-r-squared/nutshell-server?label=Latest%20release&color=blue" alt="Latest release" /></a>
 </p>
 
 VS Code extensions register their projects, the browser extension relays URLs
