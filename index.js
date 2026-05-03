@@ -892,6 +892,34 @@ function createServer(options = {}) {
       return
     }
 
+    // /transcribe/restart — kill the long-running faster-whisper daemon so
+    // the next /transcribe/stream session boots a fresh one (picking up
+    // a swapped model / config without bouncing the whole Node server).
+    // Active /transcribe/stream sessions get an error via the daemon's
+    // exit handler — that's expected; the phone re-establishes on next
+    // start. Returns once the proc has actually exited so the caller
+    // knows "next request boots fresh."
+    if (req.method === 'POST' && pathname === '/transcribe/restart') {
+      try {
+        await decryptBody(req)
+      } catch {
+        sendJson(res, 401, { error: 'Unauthorized' })
+        return
+      }
+      console.log('[transcribe] restart requested by remote client')
+      const result = await transcribe.restart()
+      sendEncrypted(
+        res, 200,
+        JSON.stringify({
+          ok: true,
+          action: 'transcribe-restart',
+          killed: result.killed,
+          available: transcribe.isAvailable(),
+        }),
+      )
+      return
+    }
+
     // /admin/restart — hot-restart: close listeners, re-create, re-listen.
     // Projects and notes survive (the project map is rebuilt by clients
     // re-registering via heartbeat). Useful when the server needs to pick up
