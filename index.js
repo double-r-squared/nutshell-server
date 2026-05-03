@@ -920,6 +920,69 @@ function createServer(options = {}) {
       return
     }
 
+    // /admin/sdk-update — runs `npm install @anthropic-ai/claude-agent-sdk@latest`
+    // in the server's install directory, then triggers a hot-restart so the
+    // updated SDK loads (loadSdk caches the import promise — only a process
+    // bounce picks up new code). Phone's "Update SDK" button hits this.
+    // Same trust model as /admin/restart: anyone with the API key can run
+    // arbitrary npm install scripts via this path.
+    if (req.method === 'POST' && pathname === '/admin/sdk-update') {
+      try {
+        await decryptBody(req)
+      } catch {
+        sendJson(res, 401, { error: 'Unauthorized' })
+        return
+      }
+      const before = claudeCode.resolveSdkVersion()
+      const cwd = path.join(__dirname)
+      console.log(`[admin] sdk-update requested by remote client (current: ${before ?? 'unknown'})`)
+      try {
+        const { execFileSync } = require('child_process')
+        // --no-audit / --no-fund quiet the install output. --no-save means
+        // we don't want to mutate package.json's caret range — the user's
+        // expectation is "always reach for latest." If we did --save the
+        // pinned version would creep up forever in the repo.
+        execFileSync(
+          'npm',
+          ['install', '@anthropic-ai/claude-agent-sdk@latest', '--no-audit', '--no-fund'],
+          { cwd, stdio: ['ignore', 'pipe', 'pipe'], timeout: 120_000 },
+        )
+      } catch (err) {
+        const detail = err && err.stderr
+          ? err.stderr.toString().trim().split('\n').slice(-3).join(' | ')
+          : (err && err.message) || 'unknown'
+        console.warn(`[admin] sdk-update install failed: ${detail}`)
+        sendEncrypted(res, 200, JSON.stringify({
+          ok: false,
+          before,
+          after: before,
+          restarted: false,
+          error: detail,
+        }))
+        return
+      }
+      const after = claudeCode.resolveSdkVersion()
+      console.log(`[admin] sdk-update installed: ${before ?? 'unknown'} → ${after ?? 'unknown'}`)
+      sendEncrypted(res, 200, JSON.stringify({
+        ok: true,
+        before,
+        after,
+        restarted: true,
+      }))
+      // Defer restart so the response has time to flush.
+      setTimeout(async () => {
+        try {
+          await stop()
+          await start()
+          console.log(`[admin] sdk-update — server restarted on :${port}`)
+        } catch (err) {
+          console.error(`[admin] sdk-update restart failed: ${err.message}`)
+          process.exit(1)
+        }
+      }, 200)
+      return
+    }
+
     // /admin/restart — hot-restart: close listeners, re-create, re-listen.
     // Projects and notes survive (the project map is rebuilt by clients
     // re-registering via heartbeat). Useful when the server needs to pick up
@@ -1019,6 +1082,7 @@ function createServer(options = {}) {
       const projectsDir = home ? path.join(home, '.claude', 'projects') : null
       const hasProjectsDir = !!projectsDir && fs.existsSync(projectsDir)
       const claudePath = claudeCode.resolveClaudePath()
+      const sdkVersion = claudeCode.resolveSdkVersion()
       sendEncrypted(res, 200, JSON.stringify({
         installed,
         hasProjectsDir,
@@ -1031,6 +1095,10 @@ function createServer(options = {}) {
         // auto-detect (which can pick the wrong platform package on
         // some glibc distros).
         claudePath,
+        // Installed @anthropic-ai/claude-agent-sdk version, read fresh
+        // from its package.json so post-update calls see the new
+        // value without needing a server restart.
+        sdkVersion,
       }))
       return
     }
