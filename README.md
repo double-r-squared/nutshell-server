@@ -1,7 +1,22 @@
-# nutshell-server
+<h1 align="center">nutshell-server</h1>
 
-Local server for [Nutshell](https://github.com/...) — streams project docs and
-URLs from your browser to the Even Realities G2 glasses companion app.
+<p align="center">
+  The local hub every other Nutshell piece talks to.
+</p>
+
+<p align="center">
+  <a href="https://github.com/double-r-squared/nutshell-vscode">VS Code Extension</a>
+  ·
+  <a href="https://github.com/double-r-squared/nutshell-browser">Browser Extension</a>
+</p>
+
+VS Code extensions register their projects, the browser extension relays URLs
+from your tabs, the phone app pulls live docs and pushes notes back — all
+through this single Node process running on your machine. Encrypted in transit
+with a pre-shared AES-256-GCM key, so no certs and no cloud round-trips
+required; runs fine on your home LAN, hotspot, or via Tailscale. Optional
+Ollama integration lets the phone skip OpenRouter entirely for summaries and
+voice Q&A.
 
 - **Multi-project doc streaming** — any number of clients can register
   their own docs folders. Each project shows up as its own row on the glasses
@@ -11,19 +26,28 @@ URLs from your browser to the Even Realities G2 glasses companion app.
   pipeline)
 - **Optional local LLM proxy** — with `--ollama`, exposes an OpenAI-compatible
   `/llm` endpoint so the phone can skip OpenRouter entirely
+- **Local STT** — with the `--with-stt` install flag, exposes a streaming
+  `/transcribe` endpoint backed by faster-whisper for on-device voice-to-text
+- **Claude Code session passthrough** — phone-driven Claude Code turns route
+  through the server's local `claude` CLI, so on-disk session history and
+  rate-limit budgets stay yours
 - **End-to-end encrypted** with a pre-shared key; the key itself is never
   transmitted, so a packet sniffer on your LAN sees only opaque ciphertext
 
 ## Install
 
+Clone the repo and install its dependencies:
+
 ```bash
-npm install -g nutshell-server
+git clone https://github.com/double-r-squared/nutshell-server.git
+cd nutshell-server
+npm install
 ```
 
-Or run once without installing:
+Then run:
 
 ```bash
-npx nutshell-server
+node bin/cli.js
 ```
 
 ## Run
