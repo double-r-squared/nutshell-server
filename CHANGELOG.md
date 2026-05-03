@@ -2,6 +2,27 @@
 
 All notable changes to nutshell-server are documented here.
 
+## 1.14.0 — Remote SDK update
+
+Phone-driven Claude Agent SDK upgrades, motivated by upstream
+regressions that need a quick patch-bump (e.g. the recent
+permission-prompt ZodError) without SSHing into the server.
+
+### Added
+
+- `POST /admin/sdk-update` — runs `npm install
+  @anthropic-ai/claude-agent-sdk@latest` in the server's install
+  directory, captures before/after versions from the SDK's
+  package.json, and triggers a hot-restart so the new code loads
+  (loadSdk caches the import promise; only a process bounce picks
+  up new code). Returns `{ ok, before, after, restarted, error? }`.
+  Same trust model as `/admin/restart`.
+- `/claude-code/status` now also returns `sdkVersion`, read fresh
+  from the SDK's package.json so post-update polls see the new
+  value without a server restart.
+- New `resolveSdkVersion()` helper in `lib/claude-code.js`,
+  exported alongside `resolveClaudePath`.
+
 ## 1.13.1 — Stable release
 
 First 1.x. Production usage has been driving the server long enough that
