@@ -7,6 +7,12 @@ All notable changes to nutshell-server are documented here.
 First 1.x. Production usage has been driving the server long enough that
 pre-1.0 versioning no longer reflects reality.
 
+### Docs
+
+- README icon swapped from black-on-white pixel-art to a transparent
+  green variant so the brand reads consistently against GitHub's dark
+  theme header. Same artwork the website's favicon ships.
+
 ## 0.13.1
 
 - `/claude-code/usage` buckets now also carry `messages` (count of assistant
