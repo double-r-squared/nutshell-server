@@ -34,6 +34,13 @@ voice Q&A.
 - **End-to-end encrypted** with a pre-shared key; the key itself is never
   transmitted, so a packet sniffer on your LAN sees only opaque ciphertext
 
+## The four pieces of Nutshell
+
+- **Nutshell** — the phone app, available on Even Hub. Pairs with the G2 glasses and renders everything you see.
+- **nutshell-server** *(this one)* — the local server the phone app connects to. Required.
+- **[nutshell-vscode](https://github.com/double-r-squared/nutshell-vscode)** — the VS Code extension. Streams your project's docs to the glasses while you code.
+- **[nutshell-browser](https://github.com/double-r-squared/nutshell-browser)** — the browser extension. One-click sends the current tab to your glasses for later reading.
+
 ## Install
 
 Clone the repo and install its dependencies:
