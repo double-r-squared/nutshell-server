@@ -1052,6 +1052,25 @@ function createServer(options = {}) {
       return
     }
 
+    // /claude-code/usage — sum token cost across every JSONL turn whose
+    // timestamp falls inside the current 5-hour rolling window and the
+    // current 7-day rolling window. Phone applies its configured plan
+    // budget to derive the percentage (server stays stateless about
+    // which plan tier the user is on). Returns spent_usd + token
+    // counts for each window plus the boundary timestamps so the phone
+    // can show "resets at HH:MM" hints.
+    if (req.method === 'POST' && pathname === '/claude-code/usage') {
+      try {
+        await decryptBody(req)
+      } catch {
+        sendJson(res, 401, { error: 'Unauthorized' })
+        return
+      }
+      const usage = claudeCode.summarizeUsage()
+      sendEncrypted(res, 200, JSON.stringify(usage))
+      return
+    }
+
     // /claude-code/turns — read the full transcript of an on-disk
     // session and return it as Turn-shaped pairs the phone can drop
     // straight into Session.turns. Used by the chat detail pane on
